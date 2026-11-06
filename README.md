@@ -19,6 +19,14 @@ Twitch chat in the terminal.
 
 </div>
 
+## About this fork
+
+This is a personal fork of [Xithrius/twitch-tui](https://github.com/Xithrius/twitch-tui), changed to better fit my own use. For everything else, see the upstream project and its documentation.
+
+### Changes in this fork
+
+- None yet.
+
 ## Feature list
 
 - Read/send/search messages

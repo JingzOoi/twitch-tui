@@ -30,7 +30,7 @@ pub struct ChannelInformationResponse {
     broadcaster_name: String,
     broadcaster_language: String,
     game_id: String,
-    game_name: String,
+    pub game_name: String,
     title: String,
     delay: usize,
     tags: Vec<String>,
@@ -92,7 +92,6 @@ pub async fn get_game_id(client: &Client, game_name: &str) -> Result<String> {
 /// Gets information about a channel
 ///
 /// <https://dev.twitch.tv/docs/api/reference/#get-channel-information>
-#[expect(unused, reason = "Not used yet, but might be useful later")]
 pub async fn get_channel_information(
     client: &Client,
     broadcaster_id: String,

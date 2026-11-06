@@ -13,6 +13,7 @@ use crate::{
     handlers::data::DataBuilder,
     twitch::{
         api::{
+            channel_information::get_channel_information,
             channels::get_channel_id,
             chat_settings::get_chat_settings,
             event_sub::{
@@ -68,6 +69,14 @@ pub async fn handle_channel_join(
         .ok()
         .flatten();
 
+    // Twitch returns an empty name when no category is set.
+    let category = get_channel_information(&twitch_client, channel_id.clone())
+        .await
+        .inspect_err(|err| warn!("Failed to get category for #{channel_name}: {err}"))
+        .ok()
+        .map(|info| info.game_name)
+        .filter(|name| !name.is_empty());
+
     let new_subscriptions = subscribe_to_events(
         &twitch_client,
         twitch_oauth,
@@ -91,6 +100,11 @@ pub async fn handle_channel_join(
     event_tx
         .send(Event::Twitch(TwitchEvent::Notification(
             TwitchNotification::StreamStarted(stream_started_at),
+        )))
+        .await?;
+    event_tx
+        .send(Event::Twitch(TwitchEvent::Notification(
+            TwitchNotification::Category(category),
         )))
         .await?;
 

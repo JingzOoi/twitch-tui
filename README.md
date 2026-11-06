@@ -25,7 +25,8 @@ This is a personal fork of [Xithrius/twitch-tui](https://github.com/Xithrius/twi
 
 ### Changes in this fork
 
-- None yet.
+- Reply to chat messages: press `v` to select a message (scroll keys move the selection), `r` to reply, `Esc` to cancel.
+- Fixed Shared Chat messages being dropped because `source_badges` failed to deserialize.
 
 ## Feature list
 

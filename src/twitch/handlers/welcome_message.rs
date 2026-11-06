@@ -6,9 +6,10 @@ use color_eyre::{
 };
 use tokio::sync::mpsc::Sender;
 use tokio_tungstenite::tungstenite::Utf8Bytes;
+use tracing::warn;
 
 use crate::{
-    events::Event,
+    events::{Event, TwitchEvent, TwitchNotification},
     handlers::data::DataBuilder,
     twitch::{
         api::{
@@ -17,6 +18,7 @@ use crate::{
             event_sub::{
                 INITIAL_EVENT_SUBSCRIPTIONS, subscribe_to_events, unsubscribe_from_events,
             },
+            streams::get_stream_started_at,
             subscriptions::Subscription,
         },
         context::TwitchWebsocketContext,
@@ -59,6 +61,13 @@ pub async fn handle_channel_join(
         &get_channel_id(&twitch_client, &channel_name).await?
     };
 
+    // Offline channels, or a failed lookup, fall back to showing the clock time.
+    let stream_started_at = get_stream_started_at(&twitch_client, channel_id)
+        .await
+        .inspect_err(|err| warn!("Failed to get stream start time for #{channel_name}: {err}"))
+        .ok()
+        .flatten();
+
     let new_subscriptions = subscribe_to_events(
         &twitch_client,
         twitch_oauth,
@@ -78,6 +87,12 @@ pub async fn handle_channel_join(
     // Set old channel to new channel
     context.set_channel_name(Some(channel_name.clone()));
     context.set_channel_id(Some(context_channel_id));
+    // Sent before "Joined" so that message gets the stream time too.
+    event_tx
+        .send(Event::Twitch(TwitchEvent::Notification(
+            TwitchNotification::StreamStarted(stream_started_at),
+        )))
+        .await?;
 
     // Notify frontend that new channel has been joined
     event_tx

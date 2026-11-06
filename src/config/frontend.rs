@@ -20,6 +20,8 @@ pub struct FrontendConfig {
     pub show_datetimes: bool,
     /// The format of string that will show up in the terminal.
     pub datetime_format: String,
+    /// Show time since the stream started instead of the clock time, when the channel is live.
+    pub stream_time: bool,
     /// If the username should be shown.
     pub username_shown: bool,
     /// The color palette.
@@ -84,6 +86,7 @@ impl Default for FrontendConfig {
             autostart_view_command: false,
             show_datetimes: true,
             datetime_format: "%a %b %e %T %Y".to_string(),
+            stream_time: false,
             username_shown: true,
             palette: Palette::default(),
             title_shown: true,
@@ -127,6 +130,7 @@ impl From<FrontendConfig> for Vec<(String, String)> {
                 "Datetime format".to_string(),
                 config.datetime_format.clone(),
             ),
+            ("Stream time".to_string(), config.stream_time.to_string()),
             (
                 "Username shown".to_string(),
                 config.username_shown.to_string(),

@@ -525,6 +525,7 @@ mod tests {
             message_id: id.map(ToString::to_string),
             highlight: false,
             badges: None,
+            stream_time: None,
         }
     }
 

@@ -1,7 +1,7 @@
 use std::{borrow::Cow, mem::swap, string::ToString, sync::LazyLock};
 
 use bon::bon;
-use chrono::{DateTime, offset::Local};
+use chrono::{DateTime, TimeDelta, Utc, offset::Local};
 use fuzzy_matcher::FuzzyMatcher;
 use memchr::{memchr_iter, memmem};
 use tracing::{error, warn};
@@ -47,6 +47,8 @@ pub struct MessageData {
     pub message_id: Option<String>,
     pub highlight: bool,
     pub badges: Option<String>,
+    /// How far into the stream the message was sent, if the channel was live when joined
+    pub stream_time: Option<TimeDelta>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,11 +91,32 @@ impl RawMessageData {
     }
 }
 
+/// Formats an offset into the stream as `HH:MM:SS`. Hours are not wrapped at 24, and grow past two digits after 99.
+fn format_stream_time(stream_time: TimeDelta) -> String {
+    // Clock skew between this machine and Twitch can make the offset slightly negative.
+    let seconds = stream_time.num_seconds().max(0);
+
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
 type Highlight<'a> = (&'a [usize], Style);
 
 impl MessageData {
-    /// Create a message and parse its emotes using global emotes, and twitch emotes provided through [`RawMessageData`]
-    pub fn from_twitch_message(msg: RawMessageData, emotes: &SharedEmotes) -> Self {
+    /// Create a message and parse its emotes using global emotes, and twitch emotes provided through [`RawMessageData`].
+    /// `stream_started_at` is when the current channel's stream started, if it was live when joined.
+    pub fn from_twitch_message(
+        msg: RawMessageData,
+        emotes: &SharedEmotes,
+        stream_started_at: Option<DateTime<Utc>>,
+    ) -> Self {
+        let stream_time =
+            stream_started_at.map(|started_at| msg.time_sent.signed_duration_since(started_at));
+
         let (payload, emotes) = Self::parse_emotes(
             msg.payload,
             emotes,
@@ -111,6 +134,7 @@ impl MessageData {
             message_id: msg.message_id,
             highlight: msg.highlight,
             badges: msg.badges,
+            stream_time,
         }
     }
 
@@ -485,11 +509,13 @@ impl MessageData {
 
         // Message prefix
         let time_sent = if frontend_config.show_datetimes {
-            Some(
-                self.time_sent
+            Some(match self.stream_time {
+                Some(stream_time) if frontend_config.stream_time => format_stream_time(stream_time),
+                _ => self
+                    .time_sent
                     .format(&frontend_config.datetime_format)
                     .to_string(),
-            )
+            })
         } else {
             None
         };
@@ -680,6 +706,7 @@ mod tests {
                 message_id: None,
                 highlight: false,
                 badges: None,
+                stream_time: None,
             }
             .hash_username(&Palette::Pastel),
             Rgb(159, 223, 221)
@@ -948,6 +975,105 @@ mod tests {
         );
     }
 
+    fn first_span(data: &MessageData, config: &FrontendConfig) -> String {
+        data.to_vec(config, 80, None, None)[0].spans[0]
+            .content
+            .to_string()
+    }
+
+    /// A message that arrived `into_stream` after the stream started, or while offline when `None`.
+    fn message_with_stream_time(
+        notification: TwitchNotification,
+        into_stream: Option<TimeDelta>,
+    ) -> MessageData {
+        let TwitchNotification::Message(raw_message) = notification else {
+            panic!("expected a message notification");
+        };
+        let stream_started_at = into_stream.map(|t| raw_message.time_sent.with_timezone(&Utc) - t);
+
+        MessageData::from_twitch_message(
+            raw_message,
+            &Rc::new(Emotes::new(false)),
+            stream_started_at,
+        )
+    }
+
+    fn user_message() -> TwitchNotification {
+        DataBuilder::user(
+            "foo".to_string(),
+            None,
+            "hello".to_string(),
+            BTreeMap::new(),
+            None,
+            false,
+            None,
+        )
+    }
+
+    #[test]
+    fn stream_time_replaces_clock_when_enabled_and_live() {
+        let data = message_with_stream_time(
+            user_message(),
+            Some(TimeDelta::seconds(3600 + 23 * 60 + 45)),
+        );
+        let config = FrontendConfig {
+            stream_time: true,
+            ..FrontendConfig::default()
+        };
+
+        assert_eq!(first_span(&data, &config), "01:23:45");
+    }
+
+    #[test]
+    fn clock_shown_when_stream_time_disabled_or_offline() {
+        let clock_config = FrontendConfig::default();
+        let stream_config = FrontendConfig {
+            stream_time: true,
+            ..FrontendConfig::default()
+        };
+
+        let live = message_with_stream_time(user_message(), Some(TimeDelta::seconds(10)));
+        let offline = message_with_stream_time(user_message(), None);
+        let clock = |m: &MessageData| {
+            m.time_sent
+                .format(&clock_config.datetime_format)
+                .to_string()
+        };
+
+        assert_eq!(first_span(&live, &clock_config), clock(&live));
+        assert_eq!(first_span(&offline, &stream_config), clock(&offline));
+    }
+
+    #[test]
+    fn system_and_twitch_messages_show_stream_time() {
+        let config = FrontendConfig {
+            stream_time: true,
+            ..FrontendConfig::default()
+        };
+        let into_stream = Some(TimeDelta::seconds(2 * 3600 + 5));
+
+        for notification in [
+            DataBuilder::system("system notice".to_string()),
+            DataBuilder::twitch("Joined #channel".to_string()),
+        ] {
+            let data = message_with_stream_time(notification, into_stream);
+            assert_eq!(first_span(&data, &config), "02:00:05");
+        }
+    }
+
+    #[test]
+    fn stream_time_format() {
+        assert_eq!(format_stream_time(TimeDelta::zero()), "00:00:00");
+        assert_eq!(format_stream_time(TimeDelta::seconds(59)), "00:00:59");
+        assert_eq!(
+            format_stream_time(TimeDelta::seconds(10 * 3600 + 5)),
+            "10:00:05"
+        );
+        assert_eq!(format_stream_time(TimeDelta::hours(25)), "25:00:00");
+        // Clock skew between this machine and Twitch can make the offset negative.
+        assert_eq!(format_stream_time(TimeDelta::seconds(-3)), "00:00:00");
+    }
+
     #[test]
     fn build_vec_with_wraps_and_highlights() {
         let raw_message = RawMessageData::builder()
@@ -962,7 +1088,7 @@ mod tests {
             .build();
 
         let emotes = Rc::new(Emotes::new(false));
-        let data = MessageData::from_twitch_message(raw_message, &emotes);
+        let data = MessageData::from_twitch_message(raw_message, &emotes, None);
 
         let frontendconfig = FrontendConfig {
             show_datetimes: false,

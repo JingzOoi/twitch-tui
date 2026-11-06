@@ -367,6 +367,9 @@ impl App {
             TwitchNotification::StreamStarted(stream_started_at) => {
                 self.stream_started_at = *stream_started_at;
             }
+            TwitchNotification::Category(category) => {
+                self.components.chat.category.clone_from(category);
+            }
             TwitchNotification::DeleteMessage(message_id) => {
                 self.remove_message_with(message_id.as_str())?;
             }

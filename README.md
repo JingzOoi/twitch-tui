@@ -28,6 +28,7 @@ This is a personal fork of [Xithrius/twitch-tui](https://github.com/Xithrius/twi
 - Reply to chat messages: press `v` to select a message (scroll keys move the selection), `r` to reply, `Esc` to cancel.
 - Fixed Shared Chat messages being dropped because `source_badges` failed to deserialize.
 - Show stream time instead of the clock time: set `stream_time = true` under `[frontend]`, and messages show how far into the stream they were sent (`HH:MM:SS`). Offline channels still show the clock time.
+- Show the channel's category (game) in the chat title, next to the time, channel and filter. It is fetched when you join a channel.
 
 ## Feature list
 

@@ -39,6 +39,8 @@ pub struct ChatWidget {
     filters: SharedFilters,
     pub scroll_offset: Scrolling,
     current_channel_name: String,
+    /// Current channel's category (game), fetched on join.
+    pub category: Option<String>,
     /// In selection mode the selected message is the bottom-most visible one, so scrolling moves it.
     selecting: bool,
     /// (message ID, author) of the bottom-most visible message, refreshed on every draw.
@@ -82,6 +84,7 @@ impl ChatWidget {
             filters,
             scroll_offset,
             current_channel_name,
+            category: None,
             selecting: false,
             selected: None,
         }
@@ -306,6 +309,10 @@ impl Component for ChatWidget {
             )),
         ];
 
+        if let Some(category) = &self.category {
+            spans.insert(2, TitleStyle::Combined("Category", category));
+        }
+
         if self.selecting {
             spans.push(TitleStyle::Combined("Select", &selection_hint));
         }
@@ -385,6 +392,7 @@ impl Component for ChatWidget {
     async fn event(&mut self, event: &Event) -> Result<()> {
         if let Event::Twitch(TwitchEvent::Action(TwitchAction::JoinChannel(channel))) = event {
             self.current_channel_name.clone_from(channel);
+            self.category = None;
             self.selecting = false;
         }
 
@@ -593,6 +601,30 @@ mod tests {
             message("bob", Some("id-bob")),
             message("alice", Some("id-alice")),
         ]
+    }
+
+    #[tokio::test]
+    async fn title_shows_category_until_channel_changes() {
+        let mut h = Harness::new(buffer());
+        h.draw();
+        assert!(!h.screen().contains("Category"), "{}", h.screen());
+
+        h.chat.category = Some("Just Chatting".to_string());
+        h.draw();
+        assert!(
+            h.screen().contains("Category: Just Chatting"),
+            "{}",
+            h.screen()
+        );
+
+        h.chat
+            .event(&Event::Twitch(TwitchEvent::Action(
+                TwitchAction::JoinChannel("other".to_string()),
+            )))
+            .await
+            .unwrap();
+        h.draw();
+        assert!(!h.screen().contains("Just Chatting"), "{}", h.screen());
     }
 
     #[tokio::test]

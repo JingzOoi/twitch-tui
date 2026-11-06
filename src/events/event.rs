@@ -49,5 +49,7 @@ pub enum TwitchNotification {
     ClearChat(Option<String>),
     /// When the joined channel's stream started, or `None` if it is offline
     StreamStarted(Option<DateTime<Utc>>),
+    /// Current channel's category, `None` if unset or the lookup failed.
+    Category(Option<String>),
     DeleteMessage(String),
 }

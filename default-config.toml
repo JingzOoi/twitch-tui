@@ -56,6 +56,9 @@ show_datetimes = true
 # The format of string that will show up in the terminal.
 # Specification of formatting datetime strings can be found here: https://strftime.org/
 datetime_format = "%a %b %e %T %Y"
+# Show time since the stream started (e.g. 01:23:45) instead of the clock time.
+# Only applies if the channel was live when you joined it, otherwise the clock time is shown.
+stream_time = false
 # If usernames should be shown in the chat window.
 username_shown = true
 # The color palette for usernames.

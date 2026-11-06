@@ -6,6 +6,7 @@ use std::{
 };
 
 use bon::bon;
+use chrono::{DateTime, Utc};
 use color_eyre::{
     Result,
     eyre::{Context, ContextCompat},
@@ -69,6 +70,9 @@ pub struct App {
     pub decoded_emotes_rx: Option<Receiver<Result<DecodedEmote, String>>>,
 
     pub running_stream: Option<Child>,
+
+    /// When the joined channel's stream started, if it was live when joined
+    stream_started_at: Option<DateTime<Utc>>,
 }
 
 macro_rules! shared {
@@ -123,6 +127,7 @@ impl App {
             emotes_rx,
             decoded_emotes_rx,
             running_stream: None,
+            stream_started_at: None,
         })
     }
 
@@ -327,7 +332,11 @@ impl App {
     ) -> Result<()> {
         match twitch_notification {
             TwitchNotification::Message(m) => {
-                let message_data = MessageData::from_twitch_message(m.clone(), &self.emotes);
+                let message_data = MessageData::from_twitch_message(
+                    m.clone(),
+                    &self.emotes,
+                    self.stream_started_at,
+                );
                 if !KNOWN_CHATTERS.contains(&message_data.author.as_str())
                     && self.config.twitch.username != message_data.author
                 {
@@ -354,6 +363,9 @@ impl App {
                 } else {
                     self.clear_messages();
                 }
+            }
+            TwitchNotification::StreamStarted(stream_started_at) => {
+                self.stream_started_at = *stream_started_at;
             }
             TwitchNotification::DeleteMessage(message_id) => {
                 self.remove_message_with(message_id.as_str())?;

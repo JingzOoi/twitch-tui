@@ -9,6 +9,7 @@ pub mod messages;
 pub mod mods;
 pub mod raids;
 pub mod shoutouts;
+pub mod streams;
 pub mod subscriptions;
 pub mod timeouts;
 pub mod vips;

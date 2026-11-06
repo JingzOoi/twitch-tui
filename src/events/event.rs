@@ -1,3 +1,5 @@
+use chrono::{DateTime, Utc};
+
 use crate::{
     events::key::Key,
     handlers::{data::RawMessageData, state::State},
@@ -45,5 +47,7 @@ pub enum TwitchAction {
 pub enum TwitchNotification {
     Message(RawMessageData),
     ClearChat(Option<String>),
+    /// When the joined channel's stream started, or `None` if it is offline
+    StreamStarted(Option<DateTime<Utc>>),
     DeleteMessage(String),
 }

@@ -106,8 +106,7 @@ impl Storage {
             }
         }
 
-        write_storage_file(&storage_path, &items)?;
-
+        // Not written here: the file is saved on exit, see `dump_data`.
         Ok(Self {
             items,
             file_path: storage_path,

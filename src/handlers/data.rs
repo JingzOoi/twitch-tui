@@ -486,7 +486,8 @@ impl MessageData {
         // If the username is highlighted and the index previous to the start of the username is an '@', highlight the '@' as well
         if let Some(username_start_index) = username_highlight.first() {
             let n = username_start_index.saturating_sub(1);
-            if self.payload.chars().nth(n).is_some_and(|char| char == '@') {
+            // Byte index, like the rest of `username_highlight`.
+            if self.payload.as_bytes().get(n) == Some(&b'@') {
                 username_highlight.insert(0, n);
             }
         }
@@ -539,8 +540,9 @@ impl MessageData {
         let wrap_limit = {
             // Add 1 for the border line
             let window_margin = usize::from(frontend_config.margin) + 1;
-            width - window_margin * 2
-        } - 1;
+            width.saturating_sub(window_margin * 2)
+        }
+        .saturating_sub(1);
 
         let prefix = " ".repeat(prefix_len);
         let opts = textwrap::Options::new(wrap_limit).initial_indent(&prefix);
@@ -624,8 +626,6 @@ impl MessageData {
 
 #[derive(Debug, Copy, Clone)]
 pub struct DataBuilder;
-
-pub static KNOWN_CHATTERS: &[&str] = &["System", "Twitch"];
 
 impl DataBuilder {
     // User messages that come from either twitch or the terminal
@@ -1125,5 +1125,46 @@ mod tests {
                 ])
             ]
         );
+    }
+
+    fn plain_message(payload: &str) -> MessageData {
+        let raw_message = RawMessageData::builder()
+            .author("foo".to_string())
+            .maybe_user_id(None)
+            .system(false)
+            .payload(payload.to_string())
+            .emotes(BTreeMap::new())
+            .maybe_message_id(None)
+            .highlight(false)
+            .maybe_badges(None)
+            .build();
+
+        MessageData::from_twitch_message(raw_message, &Rc::new(Emotes::new(false)), None)
+    }
+
+    #[test]
+    fn mention_at_sign_highlighted_after_multibyte_text() {
+        let data = plain_message("你好 @bob hi");
+        let frontendconfig = FrontendConfig {
+            show_datetimes: false,
+            ..FrontendConfig::default()
+        };
+
+        let lines = data.to_vec(&frontendconfig, 100, None, Some("bob"));
+        let spans = &lines.first().unwrap().spans;
+
+        let style_of = |text: &str| spans.iter().find(|s| s.content == text).unwrap().style;
+
+        assert_ne!(style_of("b"), Style::default());
+        assert_eq!(style_of("@"), style_of("b"));
+    }
+
+    #[test]
+    fn tiny_width_does_not_panic() {
+        let data = plain_message("foo bar baz");
+
+        for width in 0..4 {
+            let _ = data.to_vec(&FrontendConfig::default(), width, None, None);
+        }
     }
 }

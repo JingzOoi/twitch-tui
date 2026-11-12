@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, collections::HashMap, path::Path};
+use std::{borrow::BorrowMut, collections::HashMap, path::Path, sync::LazyLock, time::Duration};
 
 use color_eyre::{Result, eyre::ContextCompat};
 use futures::StreamExt;
@@ -470,6 +470,14 @@ pub async fn get_emotes(
 }
 
 pub async fn get_twitch_emote(emote_id: &str) -> Result<()> {
+    // One shared client with a timeout: this runs in the chat reader task, so a stalled CDN must not hold up chat.
+    static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+        Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_default()
+    });
+
     // Checks if emote is already downloaded.
     let path = get_cache_dir().join(emote_id);
 
@@ -479,7 +487,7 @@ pub async fn get_twitch_emote(emote_id: &str) -> Result<()> {
 
     // Download it if it is not in the cache, try the animated version first.
     let url = format!("https://static-cdn.jtvnw.net/emoticons/v2/{emote_id}/animated/light/1.0");
-    let client = Client::new();
+    let client = &*CLIENT;
     let res = client.get(&url).send().await?.error_for_status();
 
     let res = if res.is_err() {

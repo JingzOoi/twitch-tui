@@ -22,7 +22,7 @@ pub async fn handle_roomstate(
     if let Some(follower_mode_duration) = chat_settings.follower_mode() {
         writeln!(
             room_state,
-            "The channel is followers-only. You must follow the channel for at least {follower_mode_duration} second(s) to chat."
+            "The channel is followers-only. You must follow the channel for at least {follower_mode_duration} minute(s) to chat."
         )?;
     }
 

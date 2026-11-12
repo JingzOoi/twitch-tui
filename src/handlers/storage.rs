@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{SharedCoreConfig, get_data_dir};
 
-static ITEM_KEYS: &[&str] = &["channels", "mentions", "chatters"];
+static ITEM_KEYS: &[&str] = &["channels", "mentions"];
 const DEFAULT_STORAGE_FILE_NAME: &str = "storage.json";
 
 pub type SharedStorage = Rc<RefCell<Storage>>;
@@ -49,8 +49,17 @@ impl Storage {
             let file_content =
                 read_to_string(&storage_path).context("Failed to read storage file")?;
 
-            let items: StorageMap =
+            let mut items: StorageMap =
                 serde_json::from_str(&file_content).context("Failed to parse storage file")?;
+
+            // The config decides what is tracked, not the flags saved on an earlier run.
+            for (key, item) in &mut items {
+                item.enabled = match key.as_str() {
+                    "channels" => storage_config.channels,
+                    "mentions" => storage_config.mentions,
+                    _ => false,
+                };
+            }
 
             return Ok(Self {
                 items,
@@ -64,7 +73,6 @@ impl Storage {
             let enabled = match *item_key {
                 "channels" => storage_config.channels,
                 "mentions" => storage_config.mentions,
-                "chatters" => storage_config.chatters,
                 _ => bail!("Invalid storage key {item_key}."),
             };
 

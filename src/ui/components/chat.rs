@@ -149,7 +149,7 @@ impl ChatWidget {
 
         let mut general_chunk_height = area.height as usize;
         if !self.config.frontend.hide_chat_border {
-            general_chunk_height -= 2;
+            general_chunk_height = general_chunk_height.saturating_sub(2);
         }
 
         let mut scroll = self.scroll_offset.get_offset();
@@ -263,12 +263,6 @@ impl Component for ChatWidget {
         let first_v_chunk = v_chunks
             .next()
             .context("Failed to get first vertical chunk")?;
-
-        if self.messages.borrow().len() > self.config.terminal.maximum_messages {
-            self.messages
-                .borrow_mut()
-                .truncate(self.config.terminal.maximum_messages);
-        }
 
         let messages_data = self.messages.borrow();
 

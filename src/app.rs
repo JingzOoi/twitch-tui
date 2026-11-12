@@ -7,10 +7,7 @@ use std::{
 
 use bon::bon;
 use chrono::{DateTime, Utc};
-use color_eyre::{
-    Result,
-    eyre::{Context, ContextCompat},
-};
+use color_eyre::{Result, eyre::ContextCompat};
 use tokio::sync::{
     mpsc::{Receiver, Sender},
     oneshot::Receiver as OSReceiver,
@@ -29,7 +26,7 @@ use crate::{
     },
     events::{Event, Events, InternalEvent, TwitchAction, TwitchEvent, TwitchNotification},
     handlers::{
-        data::{KNOWN_CHATTERS, MessageData},
+        data::MessageData,
         filters::Filters,
         state::State,
         storage::{SharedStorage, Storage},
@@ -219,6 +216,15 @@ impl App {
     }
 
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        let result = self.run_loop(&mut terminal).await;
+
+        // Also on an error, so the storage file is still saved.
+        self.cleanup()?;
+
+        result
+    }
+
+    async fn run_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let is_emotes_enabled = self.emotes.enabled;
 
         while self.running {
@@ -236,8 +242,6 @@ impl App {
             })?;
             draw_result?;
         }
-
-        self.cleanup()?;
 
         Ok(())
     }
@@ -337,18 +341,10 @@ impl App {
                     &self.emotes,
                     self.stream_started_at,
                 );
-                if !KNOWN_CHATTERS.contains(&message_data.author.as_str())
-                    && self.config.twitch.username != message_data.author
-                {
-                    self.storage
-                        .borrow_mut()
-                        .add("chatters", message_data.author.clone())
-                        .context(format!(
-                            "Failed to add chatter {} to storage",
-                            message_data.author
-                        ))?;
-                }
-                self.messages.borrow_mut().push_front(message_data);
+                let mut messages = self.messages.borrow_mut();
+                messages.push_front(message_data);
+                messages.truncate(self.config.terminal.maximum_messages);
+                drop(messages);
 
                 // If scrolling (or selecting a message), pad for more messages so the view stays put.
                 if self.components.chat.scroll_offset.get_offset() > 0
@@ -386,7 +382,10 @@ impl Component for App {
         if self.config.frontend.state_tabs {
             let layout = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(area.height - 1), Constraint::Length(1)])
+                .constraints([
+                    Constraint::Length(area.height.saturating_sub(1)),
+                    Constraint::Length(1),
+                ])
                 .split(f.area());
 
             area = *layout.first().context("Failed to get state tabs area")?;
@@ -408,7 +407,12 @@ impl Component for App {
         }
 
         if self.components.debug.is_focused() {
-            let new_rect = Rect::new(area.x, area.y + 1, area.width - 1, area.height - 2);
+            let new_rect = Rect::new(
+                area.x,
+                area.y + 1,
+                area.width.saturating_sub(1),
+                area.height.saturating_sub(2),
+            );
 
             let rects = Layout::default()
                 .direction(Direction::Horizontal)

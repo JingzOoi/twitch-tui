@@ -14,18 +14,24 @@ use crate::events::{Event, key::Key};
 
 pub struct Events {
     rx: Receiver<Event>,
+    ui_rx: Receiver<Event>,
 }
 
 impl Events {
-    pub fn new(delay: u64, tx: Sender<Event>, rx: Receiver<Event>) -> Self {
+    pub fn new(delay: u64, tx: Sender<Event>, rx: Receiver<Event>, ui_rx: Receiver<Event>) -> Self {
         let tick_rate = Duration::from_millis(delay);
         let actor = EventsThread::new(tx, tick_rate);
         tokio::task::spawn(async move { actor.run().await });
 
-        Self { rx }
+        Self { rx, ui_rx }
     }
 
     pub async fn next(&mut self) -> Option<Event> {
+        // Events sent by the UI come first. Only the loop calling `next` sends them, so this queue never fills up.
+        if let Ok(event) = self.ui_rx.try_recv() {
+            return Some(event);
+        }
+
         self.rx.recv().await
     }
 }

@@ -41,6 +41,8 @@ async fn main() -> Result<()> {
     info!("Logging system initialised");
 
     let (event_tx, event_rx) = mpsc::channel::<Event>(100);
+    // The UI gets its own queue: the main loop is the only reader, so it must never wait on a queue that other tasks can fill.
+    let (ui_tx, ui_rx) = mpsc::channel::<Event>(100);
     let (twitch_tx, twitch_rx) = mpsc::channel::<TwitchAction>(100);
 
     let emotes = initialize_emote_decoder(&mut config);
@@ -51,7 +53,7 @@ async fn main() -> Result<()> {
     let emotes_enabled = config.frontend.is_emotes_enabled();
     let context_emotes = Rc::new(Emotes::new(emotes_enabled));
 
-    let events = Events::new(config.terminal.delay, event_tx.clone(), event_rx);
+    let events = Events::new(config.terminal.delay, event_tx.clone(), event_rx, ui_rx);
 
     let decoded_emotes_rx = if let Some((rx, cell_size)) = emotes {
         context_emotes.cell_size.get_or_init(|| cell_size);
@@ -64,7 +66,7 @@ async fn main() -> Result<()> {
         .config(config.clone())
         .twitch_oauth(twitch_oauth.clone())
         .events(events)
-        .event_tx(event_tx.clone())
+        .event_tx(ui_tx)
         .twitch_tx(twitch_tx)
         .emotes(context_emotes)
         .maybe_decoded_emotes_rx(decoded_emotes_rx)
@@ -73,9 +75,11 @@ async fn main() -> Result<()> {
     TwitchWebsocket::new(config.clone(), twitch_oauth, event_tx.clone(), twitch_rx);
 
     let terminal = init_terminal(&config.frontend)?;
-    app.run(terminal).await?;
+    let result = app.run(terminal).await;
 
+    // Restore the terminal before reporting an error, or the shell is left in raw mode.
     reset_terminal()?;
+    result?;
 
     std::process::exit(0)
 }

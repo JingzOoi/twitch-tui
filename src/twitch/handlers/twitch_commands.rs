@@ -18,7 +18,7 @@ pub enum TwitchCommand {
     Raid(String),
     /// Cancel a raid
     Unraid,
-    /// Turn followers only mode on, with optional minimum follow duration in seconds
+    /// Turn followers only mode on, with optional minimum follow duration in minutes
     Followers(Option<usize>),
     /// Turn followers only mode off
     FollowersOff,
@@ -60,11 +60,11 @@ impl TwitchCommand {
     fn handle_ban_command(args: &[&str]) -> Result<Self, Error> {
         debug!("Ban command received as {:?}", args);
         match args.iter().as_slice() {
-            [username] => Ok(Self::Ban((*username).to_string(), None)),
+            [username] => Ok(Self::Ban(username.to_lowercase(), None)),
             [username, ban_reason @ ..] => {
                 let reason = ban_reason.join(" ");
 
-                Ok(Self::Ban((*username).to_string(), Some(reason)))
+                Ok(Self::Ban(username.to_lowercase(), Some(reason)))
             }
             _ => bail!("Invalid ban command arguments"),
         }
@@ -75,14 +75,14 @@ impl TwitchCommand {
             [username, timeout_duration] => {
                 let duration = timeout_duration.parse::<usize>()?;
 
-                Ok(Self::Timeout((*username).to_string(), duration, None))
+                Ok(Self::Timeout(username.to_lowercase(), duration, None))
             }
             [username, timeout_duration, timeout_reason @ ..] => {
                 let duration = timeout_duration.parse::<usize>()?;
                 let reason = timeout_reason.join(" ");
 
                 Ok(Self::Timeout(
-                    (*username).to_string(),
+                    username.to_lowercase(),
                     duration,
                     Some(reason),
                 ))
@@ -134,14 +134,19 @@ impl FromStr for TwitchCommand {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts = s.trim().to_lowercase();
+        let mut words = s.split_whitespace();
+        // Only the command word and usernames are lowercased: titles and reasons keep their case.
+        let command = words.next().unwrap_or_default().to_lowercase();
+        let parts = std::iter::once(command.as_str())
+            .chain(words)
+            .collect::<Vec<&str>>();
 
-        let cmd = match parts.split_whitespace().collect::<Vec<&str>>().as_slice() {
+        let cmd = match parts.as_slice() {
             ["clear"] => Self::Clear,
             ["ban", args @ ..] => Self::handle_ban_command(args)?,
-            ["unban", username] => Self::Unban((*username).to_string()),
+            ["unban", username] => Self::Unban(username.to_lowercase()),
             ["timeout", args @ ..] => Self::handle_timeout_command(args)?,
-            ["raid", username] => Self::Raid((*username).to_string()),
+            ["raid", username] => Self::Raid(username.to_lowercase()),
             ["unraid"] => Self::Unraid,
             ["followers", args @ ..] => Self::handle_followers_command(args)?,
             ["followersoff"] => Self::FollowersOff,
@@ -153,11 +158,11 @@ impl FromStr for TwitchCommand {
             ["emoteonlyoff"] => Self::EmoteOnlyOff,
             ["uniquechat"] => Self::UniqueChat,
             ["uniquechatoff"] => Self::UniqueChatOff,
-            ["mod", username] => Self::Mod((*username).to_string()),
-            ["unmod", username] => Self::Unmod((*username).to_string()),
-            ["vip", username] => Self::Vip((*username).to_string()),
-            ["unvip", username] => Self::Unvip((*username).to_string()),
-            ["shoutout", username] => Self::Shoutout((*username).to_string()),
+            ["mod", username] => Self::Mod(username.to_lowercase()),
+            ["unmod", username] => Self::Unmod(username.to_lowercase()),
+            ["vip", username] => Self::Vip(username.to_lowercase()),
+            ["unvip", username] => Self::Unvip(username.to_lowercase()),
+            ["shoutout", username] => Self::Shoutout(username.to_lowercase()),
             ["commercial", args @ ..] => Self::handle_commercial_command(args)?,
             ["title", args @ ..] => Self::handle_title_command(args),
             ["category", args @ ..] => Self::handle_category_command(args),

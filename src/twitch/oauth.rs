@@ -48,9 +48,6 @@ impl TwitchOauth {
             .strip_prefix("oauth:")
             .context("token does not start with `oauth:`")?;
 
-        // Strips the `oauth:` prefix if it exists
-        let token = token.strip_prefix("oauth:").unwrap_or(token);
-
         let client = Client::new();
 
         let data = client

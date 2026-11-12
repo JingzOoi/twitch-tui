@@ -9,8 +9,6 @@ pub struct StorageConfig {
     pub channels: bool,
     /// If previous username mentions should be tracked.
     pub mentions: bool,
-    /// If chatters previously in a room should be tracked
-    pub chatters: bool,
 }
 
 impl From<StorageConfig> for Vec<(String, String)> {
@@ -18,7 +16,6 @@ impl From<StorageConfig> for Vec<(String, String)> {
         vec![
             ("Channels enabled".to_string(), config.channels.to_string()),
             ("Mentions enabled".to_string(), config.mentions.to_string()),
-            ("Chatters enabled".to_string(), config.chatters.to_string()),
         ]
     }
 }

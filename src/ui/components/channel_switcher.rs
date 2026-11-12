@@ -1,11 +1,8 @@
 use std::fmt::Display;
 
-use color_eyre::{
-    Result,
-    eyre::{Context, ContextCompat},
-};
+use color_eyre::{Result, eyre::Context};
 use tokio::sync::mpsc::Sender;
-use tracing::{debug, info};
+use tracing::info;
 use tui::{
     Frame,
     layout::Rect,
@@ -95,13 +92,12 @@ impl ChannelSwitcherWidget {
     fn next(&mut self) -> Result<()> {
         let i = match self.list_state.selected() {
             Some(i) => {
-                let items = self.storage.borrow().get("channels")?;
+                let len = match &self.filtered_channels {
+                    Some(filtered) => filtered.len(),
+                    None => self.storage.borrow().get("channels")?.len(),
+                };
 
-                if i >= items.len() - 1 {
-                    items.len() - 1
-                } else {
-                    i + 1
-                }
+                (i + 1).min(len.saturating_sub(1))
             }
             None => 0,
         };
@@ -139,87 +135,46 @@ impl ChannelSwitcherWidget {
     }
 
     async fn join_channel(&mut self) -> Result<()> {
-        if let Some(i) = self.list_state.selected() {
-            self.toggle_focus();
-            self.unselect();
+        let typed = self.search_input.to_string();
 
-            let channels = self.storage.borrow().get("channels")?;
+        // The selected row, or the typed text when no row matches it.
+        let selected_channel = match self.list_state.selected() {
+            Some(i) => {
+                let listed = match &self.filtered_channels {
+                    Some(filtered) => filtered.get(i).cloned(),
+                    None => self.storage.borrow().get("channels")?.get(i).cloned(),
+                };
 
-            let selected_channel = if let Some(v) = &self.filtered_channels {
-                if v.is_empty() {
-                    let selected_channel = self.search_input.to_string();
-
-                    if !selected_channel.is_empty() {
-                        if self.config.storage.channels {
-                            self.storage
-                                .borrow_mut()
-                                .add("channels", selected_channel.clone())
-                                .context(format!(
-                                    "Failed to add channel {selected_channel} to storage"
-                                ))?;
-                        }
-
-                        self.search_input.clear();
-
-                        self.event_tx
-                            .send(Event::Twitch(TwitchEvent::Action(
-                                TwitchAction::JoinChannel(selected_channel),
-                            )))
-                            .await?;
-                    }
-                }
-
-                v.get(i).context("Selected channel not found")?
-            } else {
-                channels.get(i).context("Selected channel not found")?
-            };
-
-            if self.config.storage.channels {
-                self.storage
-                    .borrow_mut()
-                    .add("channels", selected_channel.clone())
-                    .context(format!(
-                        "Failed to add channel {selected_channel} to storage"
-                    ))?;
+                listed.or_else(|| (!typed.is_empty()).then_some(typed))
             }
+            None => self.search_input.is_valid().then_some(typed),
+        };
 
-            self.search_input.clear();
+        let Some(selected_channel) = selected_channel else {
+            return Ok(());
+        };
 
-            debug!(
-                "Joining previously joined channel {:?}",
-                selected_channel.clone()
-            );
+        self.toggle_focus();
+        self.unselect();
 
-            self.event_tx
-                .send(Event::Twitch(TwitchEvent::Action(
-                    TwitchAction::JoinChannel(selected_channel.clone()),
-                )))
-                .await?;
-        } else if self.search_input.is_valid() {
-            self.toggle_focus();
-            self.unselect();
-
-            let selected_channel = self.search_input.to_string();
-
-            if self.config.storage.channels {
-                self.storage
-                    .borrow_mut()
-                    .add("channels", selected_channel.clone())
-                    .context(format!(
-                        "Failed to add channel {selected_channel} to storage"
-                    ))?;
-            }
-
-            self.search_input.clear();
-
-            info!("Joining new channel {selected_channel:?}");
-
-            self.event_tx
-                .send(Event::Twitch(TwitchEvent::Action(
-                    TwitchAction::JoinChannel(selected_channel),
-                )))
-                .await?;
+        if self.config.storage.channels {
+            self.storage
+                .borrow_mut()
+                .add("channels", selected_channel.clone())
+                .context(format!(
+                    "Failed to add channel {selected_channel} to storage"
+                ))?;
         }
+
+        self.search_input.clear();
+
+        info!("Joining channel {selected_channel:?}");
+
+        self.event_tx
+            .send(Event::Twitch(TwitchEvent::Action(
+                TwitchAction::JoinChannel(selected_channel),
+            )))
+            .await?;
 
         Ok(())
     }
@@ -355,18 +310,12 @@ impl Component for ChannelSwitcherWidget {
                 key if keybinds.prev_item.contains(key) => self.previous(),
                 key if keybinds.delete_item.contains(key) => {
                     if let Some(index) = self.list_state.selected() {
-                        if let Some(filtered) = self.filtered_channels.clone() {
-                            if let Some(value) = filtered.get(index) {
-                                self.storage
-                                    .borrow_mut()
-                                    .remove_inner_with("channels", value)
-                                    .context(format!(
-                                        "Failed to remove channel {value} from storage"
-                                    ))?;
-                            }
-                        } else if let Some(value) =
-                            self.storage.borrow().get("channels")?.get(index)
-                        {
+                        let channels = match self.filtered_channels.clone() {
+                            Some(filtered) => filtered,
+                            None => self.storage.borrow().get("channels")?,
+                        };
+
+                        if let Some(value) = channels.get(index) {
                             self.storage
                                 .borrow_mut()
                                 .remove_inner_with("channels", value)

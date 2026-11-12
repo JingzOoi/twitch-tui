@@ -1,15 +1,44 @@
-use std::{borrow::BorrowMut, collections::HashMap, path::Path};
+use std::{
+    borrow::BorrowMut,
+    collections::HashMap,
+    ffi::OsStr,
+    path::{Path, PathBuf},
+    sync::LazyLock,
+    time::Duration,
+};
 
-use color_eyre::{Result, eyre::ContextCompat};
+use color_eyre::{
+    Result,
+    eyre::{ContextCompat, bail},
+};
 use futures::StreamExt;
 use reqwest::{Client, Response};
 use tokio::io::AsyncWriteExt;
+use tracing::warn;
 
 use crate::{
     config::{CoreConfig, FrontendConfig, get_cache_dir},
     emotes::DownloadedEmotes,
     twitch::{api::channels::get_channel_id, oauth::TwitchOauth},
 };
+
+/// One shared client with a timeout: a stalled server must not hold up chat or the emote list.
+static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+    Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_default()
+});
+
+/// Where an emote is cached. The name comes from a server, so it must be a plain file name
+/// and not a path that leads out of the cache directory.
+fn cache_path(filename: &str) -> Result<PathBuf> {
+    if Path::new(filename).file_name() != Some(OsStr::new(filename)) {
+        bail!("Refusing emote file name {filename:?}");
+    }
+
+    Ok(get_cache_dir().join(filename))
+}
 
 // HashMap of emote name, emote filename, emote url, and if the emote is an overlay
 type EmoteMap = HashMap<String, (String, String, bool)>;
@@ -115,10 +144,9 @@ mod twitch {
 
 mod betterttv {
     use color_eyre::Result;
-    use reqwest::Client;
     use serde::Deserialize;
 
-    use crate::emotes::downloader::EmoteMap;
+    use crate::emotes::downloader::{CLIENT, EmoteMap};
 
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -128,7 +156,7 @@ mod betterttv {
         image_type: String,
     }
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Default)]
     #[serde(rename_all = "camelCase")]
     struct EmoteList {
         channel_emotes: Vec<Emote>,
@@ -136,20 +164,25 @@ mod betterttv {
     }
 
     pub async fn get_emotes(channel_id: String) -> Result<EmoteMap> {
-        let client = Client::new();
+        let client = &*CLIENT;
 
+        // A channel that is not registered with the provider still gets the global emotes.
         let EmoteList {
             channel_emotes,
             shared_emotes,
-        } = client
-            .get(format!(
-                "https://api.betterttv.net/3/cached/users/twitch/{channel_id}",
-            ))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<EmoteList>()
-            .await?;
+        } = async {
+            client
+                .get(format!(
+                    "https://api.betterttv.net/3/cached/users/twitch/{channel_id}",
+                ))
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<EmoteList>()
+                .await
+        }
+        .await
+        .unwrap_or_default();
 
         let global_emotes = client
             .get("https://api.betterttv.net/3/cached/emotes/global")
@@ -185,10 +218,9 @@ mod betterttv {
 
 mod seventv {
     use color_eyre::Result;
-    use reqwest::Client;
     use serde::Deserialize;
 
-    use crate::emotes::downloader::EmoteMap;
+    use crate::emotes::downloader::{CLIENT, EmoteMap};
 
     #[derive(Deserialize)]
     struct Emote {
@@ -208,17 +240,21 @@ mod seventv {
     }
 
     pub async fn get_emotes(channel_id: String) -> Result<EmoteMap> {
-        let client = Client::new();
+        let client = &*CLIENT;
 
-        let channel_emotes = client
-            .get(format!("https://7tv.io/v3/users/twitch/{channel_id}"))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<EmoteSet>()
-            .await?
-            .emote_set
-            .emotes;
+        // A channel that is not registered with the provider still gets the global emotes.
+        let channel_emotes = async {
+            client
+                .get(format!("https://7tv.io/v3/users/twitch/{channel_id}"))
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<EmoteSet>()
+                .await
+        }
+        .await
+        .map(|set| set.emote_set.emotes)
+        .unwrap_or_default();
 
         let global_emotes = client
             .get("https://7tv.io/v3/emote-sets/global")
@@ -249,10 +285,9 @@ mod seventv {
 mod frankerfacez {
     use color_eyre::Result;
     use futures::StreamExt;
-    use reqwest::Client;
     use serde::Deserialize;
 
-    use crate::emotes::downloader::EmoteMap;
+    use crate::emotes::downloader::{CLIENT, EmoteMap};
 
     #[derive(Deserialize)]
     struct Emote {
@@ -287,7 +322,7 @@ mod frankerfacez {
     }
 
     pub async fn get_emotes(channel_id: String) -> Result<EmoteMap> {
-        let client = &Client::new();
+        let client = &*CLIENT;
 
         let mut sets = client
             .get("https://api.frankerfacez.com/v1/_set/global")
@@ -298,7 +333,8 @@ mod frankerfacez {
             .await?
             .default_sets;
 
-        sets.push(
+        // A channel that is not registered with the provider still gets the global emotes.
+        let room = async {
             client
                 .get(format!(
                     "https://api.frankerfacez.com/v1/_room/id/{channel_id}",
@@ -307,10 +343,13 @@ mod frankerfacez {
                 .await?
                 .error_for_status()?
                 .json::<Room>()
-                .await?
-                .room
-                .set,
-        );
+                .await
+        }
+        .await;
+
+        if let Ok(room) = room {
+            sets.push(room.room.set);
+        }
 
         let emotes = futures::stream::iter(sets.into_iter().map(|set| async move {
             Ok(client
@@ -352,17 +391,27 @@ mod frankerfacez {
 }
 
 async fn save_emote(path: &Path, mut res: Response) -> Result<()> {
-    let mut file = tokio::fs::File::create(&path).await?;
+    // Download next to the final name and rename when complete: a file that exists counts as cached,
+    // so a download that was cut short must never be left under the final name.
+    let mut tmp_path = path.as_os_str().to_owned();
+    tmp_path.push(".part");
+
+    let mut file = tokio::fs::File::create(&tmp_path).await?;
 
     while let Some(mut item) = res.chunk().await? {
         file.write_all_buf(item.borrow_mut()).await?;
     }
 
+    file.flush().await?;
+    drop(file);
+
+    tokio::fs::rename(&tmp_path, path).await?;
+
     Ok(())
 }
 
 async fn download_emotes(emotes: EmoteMap) -> DownloadedEmotes {
-    let client = &Client::new();
+    let client = &*CLIENT;
 
     // We need to limit the number of concurrent connections, otherwise we might hit some system limits
     // ex: number of files/sockets open, etc.
@@ -370,7 +419,7 @@ async fn download_emotes(emotes: EmoteMap) -> DownloadedEmotes {
         emotes
             .into_iter()
             .map(|(x, (filename, url, o))| async move {
-                let path = get_cache_dir().join(&filename);
+                let path = cache_path(&filename)?;
 
                 if tokio::fs::metadata(&path).await.is_ok() {
                     return Ok((x, (filename, o)));
@@ -459,7 +508,11 @@ pub async fn get_emotes(
     .collect::<Vec<Result<EmoteMap>>>()
     .await
     .into_iter()
-    .flatten()
+    .filter_map(|emotes| {
+        emotes
+            .inspect_err(|err| warn!("Unable to get emotes from a provider: {err}"))
+            .ok()
+    })
     .flatten()
     .collect::<EmoteMap>();
 
@@ -471,7 +524,7 @@ pub async fn get_emotes(
 
 pub async fn get_twitch_emote(emote_id: &str) -> Result<()> {
     // Checks if emote is already downloaded.
-    let path = get_cache_dir().join(emote_id);
+    let path = cache_path(emote_id)?;
 
     if tokio::fs::metadata(&path).await.is_ok() {
         return Ok(());
@@ -479,7 +532,7 @@ pub async fn get_twitch_emote(emote_id: &str) -> Result<()> {
 
     // Download it if it is not in the cache, try the animated version first.
     let url = format!("https://static-cdn.jtvnw.net/emoticons/v2/{emote_id}/animated/light/1.0");
-    let client = Client::new();
+    let client = &*CLIENT;
     let res = client.get(&url).send().await?.error_for_status();
 
     let res = if res.is_err() {
@@ -493,4 +546,21 @@ pub async fn get_twitch_emote(emote_id: &str) -> Result<()> {
     }?;
 
     save_emote(&path, res).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_path_accepts_only_plain_file_names() {
+        assert_eq!(
+            cache_path("abc123.webp").unwrap(),
+            get_cache_dir().join("abc123.webp")
+        );
+
+        for name in ["../../.config/autostart/x", "/etc/passwd", "a/b", "..", ""] {
+            assert!(cache_path(name).is_err(), "{name:?} was accepted");
+        }
+    }
 }

@@ -125,99 +125,72 @@ pub async fn handle_command_message(
 
             "Raid cancelled".to_string()
         }
-        TwitchCommand::Followers(duration) => {
-            let update_query = ModeratorQuery::new(channel_id.clone(), user_id);
+        // Every chat setting goes through the same endpoint, only the payload and the reply differ.
+        TwitchCommand::Followers(_)
+        | TwitchCommand::FollowersOff
+        | TwitchCommand::Slow(_)
+        | TwitchCommand::SlowOff
+        | TwitchCommand::Subscribers
+        | TwitchCommand::SubscribersOff
+        | TwitchCommand::EmoteOnly
+        | TwitchCommand::EmoteOnlyOff
+        | TwitchCommand::UniqueChat
+        | TwitchCommand::UniqueChatOff => {
+            use UpdateTwitchChatSettingsPayload as Payload;
 
-            let update_payload = UpdateTwitchChatSettingsPayload::new_follower_mode(true, duration);
+            let (update_payload, reply) = match command {
+                TwitchCommand::Followers(duration) => (
+                    Payload::new_follower_mode(true, duration),
+                    duration.map_or_else(
+                        || "Enabled followers-only mode for this room".to_string(),
+                        |duration| {
+                            format!("Enabled {duration} minutes followers-only mode for this room")
+                        },
+                    ),
+                ),
+                TwitchCommand::FollowersOff => (
+                    Payload::new_follower_mode(false, None),
+                    "Disabled followers-only mode for this room".to_string(),
+                ),
+                TwitchCommand::Slow(duration) => (
+                    Payload::new_slow_mode(true, Some(duration)),
+                    format!("Enabled {duration}-second slow mode for this room"),
+                ),
+                TwitchCommand::SlowOff => (
+                    Payload::new_slow_mode(false, None),
+                    "Disabled slow mode for this room".to_string(),
+                ),
+                TwitchCommand::Subscribers => (
+                    Payload::new_subscriber_mode(true),
+                    "Enabled subscribers-only mode for this room".to_string(),
+                ),
+                TwitchCommand::SubscribersOff => (
+                    Payload::new_subscriber_mode(false),
+                    "Disabled subscribers-only mode for this room".to_string(),
+                ),
+                TwitchCommand::EmoteOnly => (
+                    Payload::new_emote_only_mode(true),
+                    "Enabled emote-only mode for this room".to_string(),
+                ),
+                TwitchCommand::EmoteOnlyOff => (
+                    Payload::new_emote_only_mode(false),
+                    "Disabled emote-only mode for this room".to_string(),
+                ),
+                TwitchCommand::UniqueChat => (
+                    Payload::new_unique_chat_mode(true),
+                    "Enabled unique-chat mode for this room".to_string(),
+                ),
+                _ => (
+                    Payload::new_unique_chat_mode(false),
+                    "Disabled unique-chat mode for this room".to_string(),
+                ),
+            };
+
+            let update_query = ModeratorQuery::new(channel_id.clone(), user_id);
 
             update_chat_settings(&twitch_client, update_query, update_payload).await?;
 
-            duration.map_or_else(
-                || "Enabled followers-only mode for this room".to_string(),
-                |duration| format!("Enabled {duration} minutes followers-only mode for this room"),
-            )
-        }
-        TwitchCommand::FollowersOff => {
-            let update_query = ModeratorQuery::new(channel_id.clone(), user_id);
-
-            let update_payload = UpdateTwitchChatSettingsPayload::new_follower_mode(false, None);
-
-            update_chat_settings(&twitch_client, update_query, update_payload).await?;
-
-            "Disabled followers-only mode for this room".to_string()
-        }
-        TwitchCommand::Slow(duration) => {
-            let update_query = ModeratorQuery::new(channel_id.clone(), user_id);
-
-            let update_payload =
-                UpdateTwitchChatSettingsPayload::new_slow_mode(true, Some(duration));
-
-            update_chat_settings(&twitch_client, update_query, update_payload).await?;
-
-            format!("Enabled {duration}-second slow mode for this room")
-        }
-        TwitchCommand::SlowOff => {
-            let update_query = ModeratorQuery::new(channel_id.clone(), user_id);
-
-            let update_payload = UpdateTwitchChatSettingsPayload::new_slow_mode(false, None);
-
-            update_chat_settings(&twitch_client, update_query, update_payload).await?;
-
-            "Disabled slow mode for this room".to_string()
-        }
-        TwitchCommand::Subscribers => {
-            let update_query = ModeratorQuery::new(channel_id.clone(), user_id);
-
-            let update_payload = UpdateTwitchChatSettingsPayload::new_subscriber_mode(true);
-
-            update_chat_settings(&twitch_client, update_query, update_payload).await?;
-
-            "Enabled subscribers-only mode for this room".to_string()
-        }
-        TwitchCommand::SubscribersOff => {
-            let update_query = ModeratorQuery::new(channel_id.clone(), user_id);
-
-            let update_payload = UpdateTwitchChatSettingsPayload::new_subscriber_mode(false);
-
-            update_chat_settings(&twitch_client, update_query, update_payload).await?;
-
-            "Disabled subscribers-only mode for this room".to_string()
-        }
-        TwitchCommand::EmoteOnly => {
-            let update_query = ModeratorQuery::new(channel_id.clone(), user_id);
-
-            let update_payload = UpdateTwitchChatSettingsPayload::new_emote_only_mode(true);
-
-            update_chat_settings(&twitch_client, update_query, update_payload).await?;
-
-            "Enabled emote-only mode for this room".to_string()
-        }
-        TwitchCommand::EmoteOnlyOff => {
-            let update_query = ModeratorQuery::new(channel_id.clone(), user_id);
-
-            let update_payload = UpdateTwitchChatSettingsPayload::new_emote_only_mode(false);
-
-            update_chat_settings(&twitch_client, update_query, update_payload).await?;
-
-            "Disabled emote-only mode for this room".to_string()
-        }
-        TwitchCommand::UniqueChat => {
-            let update_query = ModeratorQuery::new(channel_id.clone(), user_id);
-
-            let update_payload = UpdateTwitchChatSettingsPayload::new_unique_chat_mode(true);
-
-            update_chat_settings(&twitch_client, update_query, update_payload).await?;
-
-            "Enabled unique-chat mode for this room".to_string()
-        }
-        TwitchCommand::UniqueChatOff => {
-            let update_query = ModeratorQuery::new(channel_id.clone(), user_id);
-
-            let update_payload = UpdateTwitchChatSettingsPayload::new_unique_chat_mode(false);
-
-            update_chat_settings(&twitch_client, update_query, update_payload).await?;
-
-            "Disabled unique-chat mode for this room".to_string()
+            reply
         }
         TwitchCommand::Vip(username) => {
             let target_user_id = get_channel_id(&twitch_client, &username).await?;

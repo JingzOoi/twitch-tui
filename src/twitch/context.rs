@@ -8,8 +8,6 @@ use super::{api::subscriptions::Subscription, oauth::TwitchOauth};
 pub struct TwitchWebsocketContext {
     /// Data from the authentication endpoint for the current session
     oauth: Option<TwitchOauth>,
-    /// The OAuth token for the user
-    token: Option<String>,
 
     /// Current session ID
     session_id: Option<String>,
@@ -52,10 +50,6 @@ impl TwitchWebsocketContext {
 
     pub fn set_oauth(&mut self, oauth: Option<TwitchOauth>) {
         self.oauth = oauth;
-    }
-
-    pub fn set_token(&mut self, token: Option<String>) {
-        self.token = token;
     }
 
     pub fn set_session_id(&mut self, session_id: Option<String>) {

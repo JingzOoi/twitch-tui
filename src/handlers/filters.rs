@@ -2,6 +2,7 @@ use std::{cell::RefCell, fs::read_to_string, path::PathBuf, rc::Rc, string::ToSt
 
 use color_eyre::Result;
 use regex::Regex;
+use tracing::warn;
 
 use crate::config::{SharedCoreConfig, get_config_dir};
 
@@ -94,7 +95,11 @@ fn parse_filters_regex(entries: Vec<String>) -> Vec<Regex> {
     entries
         .into_iter()
         .filter(|s| !s.is_empty())
-        .flat_map(|s| Regex::new(&s))
+        .filter_map(|s| {
+            Regex::new(&s)
+                .inspect_err(|err| warn!("Ignoring invalid filter {s:?}: {err}"))
+                .ok()
+        })
         .collect()
 }
 

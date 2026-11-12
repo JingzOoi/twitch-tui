@@ -51,7 +51,7 @@ impl CoreConfig {
         }
 
         let config_path = get_config_dir().join("config.toml");
-        if !config_path.exists() {
+        let mut config: Self = if !config_path.exists() {
             create_dir_all(
                 config_path
                     .parent()
@@ -60,17 +60,28 @@ impl CoreConfig {
 
             if let Some(config) = interactive_config() {
                 persist_config(&config_path, &config)?;
-                Ok(config)
+                config
             } else {
                 persist_default_config(&config_path)?;
                 bail!("Config not found. Generated default configuration at {config_path:?}")
             }
         } else if let Ok(file_content) = read_to_string(config_path) {
-            let mut config: Self = match toml::from_str(&file_content) {
+            match toml::from_str(&file_content) {
                 Ok(c) => c,
                 Err(err) => bail!("Config could not be processed. Error: {:?}", err.message()),
-            };
+            }
+        } else {
+            bail!(
+                "Configuration could not be read correctly. See the following link for the example config: {}",
+                format!(
+                    "{}/blob/main/default-config.toml",
+                    env!("CARGO_PKG_REPOSITORY")
+                )
+            )
+        };
 
+        // Arguments and the environment apply to a config from the setup wizard too.
+        {
             merge_args_into_config(&mut config, cli);
 
             let token = env::var("TWT_TOKEN").ok();
@@ -105,14 +116,6 @@ impl CoreConfig {
             config.twitch.channel = config.twitch.channel.to_lowercase();
 
             Ok(config)
-        } else {
-            bail!(
-                "Configuration could not be read correctly. See the following link for the example config: {}",
-                format!(
-                    "{}/blob/main/default-config.toml",
-                    env!("CARGO_PKG_REPOSITORY")
-                )
-            )
         }
     }
 }

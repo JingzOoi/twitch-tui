@@ -43,6 +43,22 @@ pub async fn handle_channel_join(
         .map(std::borrow::ToOwned::to_owned)
         .collect();
 
+    // Look the new channel up before leaving the old one, so a mistyped name keeps the current chat.
+    let channel_id = if first_channel {
+        context
+            .channel_id()
+            .context("Failed to get channel ID from context")?
+    } else {
+        &get_channel_id(&twitch_client, &channel_name)
+            .await
+            .with_context(|| {
+                format!(
+                    "Channel lookup failed, still in #{}",
+                    context.channel_name().map_or("?", String::as_str)
+                )
+            })?
+    };
+
     // Unsubscribe from previous channel
     if !first_channel {
         unsubscribe_from_events(
@@ -52,15 +68,6 @@ pub async fn handle_channel_join(
         )
         .await?;
     }
-
-    // Subscribe to new channel
-    let channel_id = if first_channel {
-        context
-            .channel_id()
-            .context("Failed to get channel ID from context")?
-    } else {
-        &get_channel_id(&twitch_client, &channel_name).await?
-    };
 
     // Offline channels, or a failed lookup, fall back to showing the clock time.
     let stream_started_at = get_stream_started_at(&twitch_client, channel_id)
@@ -115,9 +122,10 @@ pub async fn handle_channel_join(
         .context("Failed to send twitch join message")?;
 
     // Handle new chat settings with roomstate
-    let chat_settings =
-        get_chat_settings(context.twitch_client().as_ref(), context.channel_id()).await?;
-    handle_roomstate(&chat_settings, event_tx).await?;
+    match get_chat_settings(context.twitch_client().as_ref(), context.channel_id()).await {
+        Ok(chat_settings) => handle_roomstate(&chat_settings, event_tx).await?,
+        Err(err) => warn!("Failed to get chat settings for #{channel_name}: {err}"),
+    }
 
     Ok(())
 }

@@ -54,15 +54,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # 2.8.2
-        with:
-          workspaces: ${{ github.workspace }}
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561 # latest commit
         with:
           toolchain: ${{ matrix.toolchain }}
+
+      # After the toolchain: the cache key includes the compiler version, so stable and nightly stay apart.
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # 2.8.2
+        with:
+          workspaces: ${{ github.workspace }}
 
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}

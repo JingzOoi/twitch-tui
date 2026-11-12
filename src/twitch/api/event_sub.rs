@@ -15,8 +15,7 @@ use crate::twitch::{
     oauth::TwitchOauth,
 };
 
-/// Events that should be subscribed to when the first chat room is entered.
-/// Channel chat messages are excluded since it's subscribed to on channel join.
+/// Events that are subscribed to whenever a chat room is entered.
 pub static INITIAL_EVENT_SUBSCRIPTIONS: &[Subscription] = &[
     Subscription::Message,
     Subscription::Notification,

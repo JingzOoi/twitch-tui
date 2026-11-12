@@ -154,7 +154,7 @@ impl Component for EmotePickerWidget {
                     Some((
                         name,
                         data,
-                        FUZZY_FINDER.fuzzy_indices(&name.to_ascii_lowercase(), &current_input)?,
+                        FUZZY_FINDER.fuzzy_indices(name, &current_input)?,
                     ))
                 })
                 .collect::<Vec<_>>();
@@ -167,16 +167,21 @@ impl Component for EmotePickerWidget {
                     break;
                 }
 
-                let Ok(loaded_emote) = load_picker_emote(
+                let loaded_emote = match load_picker_emote(
                     name,
                     filename,
                     *zero_width,
                     &mut self.emotes.info.borrow_mut(),
                     cell_size,
-                )
-                .map_err(|e| warn!("{e}")) else {
-                    bad_emotes.push(name.clone());
-                    continue;
+                ) {
+                    Ok(Some(loaded_emote)) => loaded_emote,
+                    // The decoder is busy, the emote shows up on a later draw.
+                    Ok(None) => continue,
+                    Err(e) => {
+                        warn!("{e}");
+                        bad_emotes.push(name.clone());
+                        continue;
+                    }
                 };
 
                 let cols = (loaded_emote.width as f32 / cell_size.0).ceil() as u16;

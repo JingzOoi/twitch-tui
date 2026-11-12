@@ -346,3 +346,36 @@ fn test_twitch_command_category_valid() {
         TwitchCommand::Category("name with space".to_string())
     );
 }
+
+#[test]
+fn test_twitch_command_keeps_argument_case() {
+    assert_eq!(
+        TwitchCommand::from_str("title My New Stream").unwrap(),
+        TwitchCommand::Title("My New Stream".to_string())
+    );
+    assert_eq!(
+        TwitchCommand::from_str("category Just Chatting").unwrap(),
+        TwitchCommand::Category("Just Chatting".to_string())
+    );
+    assert_eq!(
+        TwitchCommand::from_str("ban UserName Being Rude").unwrap(),
+        TwitchCommand::Ban("username".to_string(), Some("Being Rude".to_string()))
+    );
+    assert_eq!(
+        TwitchCommand::from_str("timeout UserName 10 Calm Down").unwrap(),
+        TwitchCommand::Timeout("username".to_string(), 10, Some("Calm Down".to_string()))
+    );
+}
+
+#[test]
+fn test_twitch_command_name_is_case_insensitive() {
+    assert_eq!(
+        TwitchCommand::from_str("  Clear ").unwrap(),
+        TwitchCommand::Clear
+    );
+    assert_eq!(
+        TwitchCommand::from_str("MOD UserName").unwrap(),
+        TwitchCommand::Mod("username".to_string())
+    );
+    assert!(TwitchCommand::from_str("").is_err());
+}

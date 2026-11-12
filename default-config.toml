@@ -30,20 +30,22 @@ channels = false
 # If enabled, the chat input box will search previously mentioned users, given that
 # the first character in the input box is `@`.
 mentions = false
-# If previous users in chat should be tracked
-# If enabled, the chat input box will search chatters previously seen, given that
-# the first character in the input box is '@'
-chatters = false
 
-[filters]
-# If filters should be enabled.
-# Filters can be configured by placing a `filters.txt` file in the same directory
+# Filters for chat messages.
+[filters.message]
+# If message filters should be enabled.
+# Filters can be configured by placing a `message_filters.txt` file in the same directory
 # as the config file.
 # Each new filter is to be put on a new line.
 # Regex can be used, where as keywords will also try to match anything in a message.
 enabled = false
 # If the regex filters should be reversed.
 # This means that everything in the filters file will be accepted.
+reversed = false
+
+# Filters for chat usernames, read from `username_filters.txt`.
+[filters.username]
+enabled = false
 reversed = false
 
 [frontend]

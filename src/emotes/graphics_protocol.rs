@@ -461,6 +461,7 @@ pub fn support_graphics_protocol() -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Expected strings use the real `IS_TMUX` value so the tests also pass inside tmux.
 
     #[test]
     fn load_static_image() {
@@ -484,7 +485,7 @@ mod tests {
         assert_eq!(
             s,
             gp!(
-                false,
+                *IS_TMUX,
                 "a=t,t=t,f=32,s=30,v=42,i=1,q=2;{path}",
                 path = STANDARD.encode(path)
             )
@@ -529,21 +530,21 @@ mod tests {
         assert_eq!(
             s,
             gp!(
-                false,
+                *IS_TMUX,
                 "a=t,t=t,f=32,s=30,v=42,i=1,q=2;{path}",
                 path = STANDARD.encode(paths[0])
-            ) + &gp!(false, "a=a,i=1,r=1,z=0,q=2;")
+            ) + &gp!(*IS_TMUX, "a=a,i=1,r=1,z=0,q=2;")
                 + &gp!(
-                    false,
+                    *IS_TMUX,
                     "a=f,t=t,f=32,s=12,v=74,i=1,z=89,q=2;{path}",
                     path = STANDARD.encode(paths[1])
                 )
                 + &gp!(
-                    false,
+                    *IS_TMUX,
                     "a=f,t=t,f=32,s=54,v=45,i=1,z=4,q=2;{path}",
                     path = STANDARD.encode(paths[2])
                 )
-                + &gp!(false, "a=a,i=1,s=3,v=1,q=2;")
+                + &gp!(*IS_TMUX, "a=a,i=1,s=3,v=1,q=2;")
         );
     }
 
@@ -553,7 +554,7 @@ mod tests {
 
         Clear(1).write_ansi(&mut s).unwrap();
 
-        assert_eq!(s, gp!(false, "a=d,d=I,i=1,q=2;"));
+        assert_eq!(s, gp!(*IS_TMUX, "a=d,d=I,i=1,q=2;"));
     }
 
     #[test]
@@ -562,7 +563,7 @@ mod tests {
 
         Display::new(1, 2, 3).write_ansi(&mut s).unwrap();
 
-        assert_eq!(s, gp!(false, "a=p,U=1,i=1,p=2,r=1,c=3,q=2;"));
+        assert_eq!(s, gp!(*IS_TMUX, "a=p,U=1,i=1,p=2,r=1,c=3,q=2;"));
     }
 
     #[test]
@@ -572,6 +573,6 @@ mod tests {
             .write_ansi(&mut s)
             .unwrap();
 
-        assert_eq!(s, gp!(false, "a=p,i=1,p=2,P=3,Q=4,z=1,H=1,X=4,q=2;"));
+        assert_eq!(s, gp!(*IS_TMUX, "a=p,i=1,p=2,P=3,Q=4,z=1,H=1,X=4,q=2;"));
     }
 }

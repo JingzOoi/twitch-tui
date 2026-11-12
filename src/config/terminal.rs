@@ -34,7 +34,7 @@ impl Default for TerminalConfig {
 impl From<TerminalConfig> for Vec<(String, String)> {
     fn from(config: TerminalConfig) -> Self {
         vec![
-            ("Current channel".to_string(), config.delay.to_string()),
+            ("Delay".to_string(), config.delay.to_string()),
             (
                 "Max messages".to_string(),
                 config.maximum_messages.to_string(),

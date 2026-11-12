@@ -1,6 +1,14 @@
-use color_eyre::{Result, eyre::bail};
+use std::time::Duration;
+
+use color_eyre::{
+    Result,
+    eyre::{Context, bail},
+};
 use futures::StreamExt;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::{
+    sync::mpsc::{Receiver, Sender},
+    time::{Instant, sleep, sleep_until, timeout},
+};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{debug, error, info};
 
@@ -21,9 +29,10 @@ use crate::{
     },
 };
 
-pub struct TwitchWebsocket {
-    // rx: Receiver<TwitchAction>,
-}
+const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub struct TwitchWebsocket {}
 
 impl TwitchWebsocket {
     pub fn new(
@@ -40,10 +49,6 @@ impl TwitchWebsocket {
 
         Self {}
     }
-
-    // pub fn next(&self) -> Result<Event> {
-    //     Ok(self.rx.recv()?)
-    // }
 }
 
 pub type WebsocketStream = futures::stream::SplitStream<
@@ -89,17 +94,41 @@ impl TwitchWebsocketThread {
 
         let (_, mut stream) = ws_stream.split();
 
-        // If the dashboard is the start state, wait until the user has selected
-        // a channel before connecting to Twitch's websocket server.
+        // The welcome message is the first text frame, a ping may come before it.
+        let message = loop {
+            match stream.next().await {
+                Some(Ok(Message::Text(message))) => break message,
+                Some(Ok(_)) => debug!("Websocket server has pinged you to make sure you're here"),
+                _ => bail!("Welcome message from websocket server was not found"),
+            }
+        };
+
+        handle_welcome_message(&mut self.context, &self.event_tx, message)
+            .await
+            .context("Failed to handle welcome message")?;
+
+        Ok(stream)
+    }
+
+    async fn run(&mut self) -> Result<()> {
+        self.context
+            .set_emotes_state(self.config.frontend.is_emotes_enabled());
+
+        // If the dashboard is the start state, wait until the user has selected a channel
+        // before connecting: Twitch closes a session that has no subscriptions after a few seconds.
         if self.config.terminal.first_state == State::Dashboard {
             debug!("Waiting for user to select channel from dashboard screen");
 
             loop {
-                if let Some(TwitchAction::JoinChannel(channel_name)) = self.action_rx.recv().await {
-                    self.context.set_channel_name(Some(channel_name));
+                match self.action_rx.recv().await {
+                    Some(TwitchAction::JoinChannel(channel_name)) => {
+                        self.context.set_channel_name(Some(channel_name));
 
-                    debug!("User has selected channel from start screen");
-                    break;
+                        debug!("User has selected channel from start screen");
+                        break;
+                    }
+                    Some(_) => {}
+                    None => return Ok(()),
                 }
             }
         } else {
@@ -107,87 +136,130 @@ impl TwitchWebsocketThread {
                 .set_channel_name(Some(self.config.twitch.channel.clone()));
         }
 
-        let emotes_enabled = self.config.frontend.is_emotes_enabled();
+        // Tell the user about the first failure only, retries stay in the log.
+        let mut notify = true;
 
-        self.context.set_emotes_state(emotes_enabled);
-        self.context.set_token(self.config.twitch.token.clone());
+        loop {
+            let problem = match timeout(CONNECT_TIMEOUT, self.connect()).await {
+                Ok(Ok(stream)) => {
+                    notify = true;
 
-        if stream.next().await.is_some() {
-            debug!("Websocket server has pinged you to make sure you're here");
+                    if !self.read_until_closed(stream).await? {
+                        return Ok(());
+                    }
+
+                    "Connection to Twitch lost".to_string()
+                }
+                Ok(Err(err)) => format!("Failed to connect to Twitch: {err:#}"),
+                Err(_) => "Timed out connecting to Twitch".to_string(),
+            };
+
+            error!("{problem}, retrying in {RECONNECT_DELAY:?}");
+
+            if notify {
+                self.event_tx
+                    .send(DataBuilder::twitch(format!("{problem}, reconnecting...")).into())
+                    .await?;
+                notify = false;
+            }
+
+            // Keep reading actions while waiting, so a new channel pick replaces one that cannot be joined.
+            tokio::select! {
+                () = sleep(RECONNECT_DELAY) => {}
+                action = self.action_rx.recv() => match action {
+                    Some(TwitchAction::JoinChannel(channel_name)) => {
+                        self.context.set_channel_name(Some(channel_name));
+                        notify = true;
+                    }
+                    Some(action) => self.run_twitch_action(action).await?,
+                    None => return Ok(()),
+                },
+            }
         }
-
-        // Handle the welcome message, it should arrive after the initial ping
-        let Some(Ok(Message::Text(message))) = stream.next().await else {
-            let error_message = "Welcome message from websocket server was not found, something has gone terribly wrong";
-            self.event_tx
-                .send(DataBuilder::system(error_message.to_string()).into())
-                .await?;
-            bail!(error_message);
-        };
-        if let Err(err) = handle_welcome_message(&mut self.context, &self.event_tx, message).await {
-            let error_message = format!("Failed to handle welcome message: {err}");
-            self.event_tx
-                .send(DataBuilder::system(error_message.clone()).into())
-                .await?;
-            bail!(error_message);
-        }
-
-        Ok(stream)
     }
 
-    async fn run(&mut self) -> Result<()> {
-        let mut stream = self.connect().await?;
+    /// Reads chat until the connection is lost. Returns `false` when the app itself has gone away.
+    async fn read_until_closed(&mut self, mut stream: WebsocketStream) -> Result<bool> {
+        // Twitch sends at least a keepalive this often, a longer silence means the connection is dead.
+        let keepalive = Duration::from_secs(
+            u64::try_from(self.config.twitch.keepalive_timeout_seconds).unwrap_or(30) + 10,
+        );
+        let mut deadline = Instant::now() + keepalive;
 
         loop {
             tokio::select! {
                 biased;
 
-                Some(action) = self.action_rx.recv() => {
-                    if let Err(err) = self.handle_twitch_action(action).await {
-                        error!("Failed to handle twitch action: {err}");
-                    }
+                action = self.action_rx.recv() => {
+                    let Some(action) = action else {
+                        return Ok(false);
+                    };
+
+                    self.run_twitch_action(action).await?;
                 }
-                Some(message) = stream.next() => {
-                    match message {
-                        Ok(msg) => if let Err(err) = self.handle_websocket_stream_message(msg).await {
-                            error!("Failed to handle websocket message: {err}");
-                        },
-                        Err(err) => {
-                            error!("Twitch connection error encountered: {err}, attempting to reconnect.");
+                message = stream.next() => {
+                    let message = match message {
+                        Some(Ok(message)) if !message.is_close() => message,
+                        other => {
+                            error!("Twitch connection closed: {other:?}");
+                            return Ok(true);
                         }
+                    };
+
+                    deadline = Instant::now() + keepalive;
+
+                    if let Err(err) = self.handle_websocket_stream_message(message).await {
+                        error!("Failed to handle websocket message: {err}");
                     }
                 }
-                else => {}
+                () = sleep_until(deadline) => {
+                    error!("No keepalive from Twitch for {keepalive:?}");
+                    return Ok(true);
+                }
             };
         }
+    }
+
+    /// Runs a user action. A failure is shown in chat, not only logged.
+    async fn run_twitch_action(&mut self, action: TwitchAction) -> Result<()> {
+        if let Err(err) = self.handle_twitch_action(action).await {
+            error!("Failed to handle twitch action: {err:#}");
+
+            self.event_tx
+                .send(DataBuilder::twitch(format!("{err:#}")).into())
+                .await?;
+        }
+
+        Ok(())
     }
 
     async fn handle_twitch_action(&mut self, action: TwitchAction) -> Result<()> {
         match action {
             TwitchAction::Message(message) => {
                 if let Some(command) = message.strip_prefix('/') {
-                    if let Err(err) =
-                        handle_command_message(&self.context, &self.event_tx, command).await
-                    {
-                        self.event_tx
-                            .send(
-                                DataBuilder::twitch(format!(
-                                    "Failed to handle Twitch message command from terminal: {err}"
-                                ))
-                                .into(),
-                            )
-                            .await?;
-                        return Err(err);
-                    }
+                    handle_command_message(&self.context, &self.event_tx, command)
+                        .await
+                        .context("Failed to handle Twitch message command from terminal")?;
                 } else {
-                    handle_send_message(&self.context, message, None).await?;
+                    handle_send_message(&self.context, message, None)
+                        .await
+                        .context("Failed to send message")?;
                 }
             }
             TwitchAction::Reply { parent_id, message } => {
-                handle_send_message(&self.context, message, Some(parent_id)).await?;
+                handle_send_message(&self.context, message, Some(parent_id))
+                    .await
+                    .context("Failed to send reply")?;
             }
             TwitchAction::JoinChannel(channel_name) => {
-                handle_channel_join(&mut self.context, &self.event_tx, channel_name, false).await?;
+                handle_channel_join(
+                    &mut self.context,
+                    &self.event_tx,
+                    channel_name.clone(),
+                    false,
+                )
+                .await
+                .with_context(|| format!("Failed to join #{channel_name}"))?;
             }
         }
 

@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
-    fs::{File, create_dir_all, read_to_string},
+    fs::{create_dir_all, read_to_string},
     io::Write,
     path::{Path, PathBuf},
     rc::Rc,
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{SharedCoreConfig, get_data_dir};
 
-static ITEM_KEYS: &[&str] = &["channels", "mentions", "chatters"];
+static ITEM_KEYS: &[&str] = &["channels", "mentions"];
 const DEFAULT_STORAGE_FILE_NAME: &str = "storage.json";
 
 pub type SharedStorage = Rc<RefCell<Storage>>;
@@ -31,6 +31,21 @@ pub struct Storage {
 pub struct StorageItem {
     content: Vec<String>,
     enabled: bool,
+}
+
+/// Writes to a temporary file and renames it over the target, so nobody ever reads a half-written file
+/// and a crash while saving cannot empty the storage.
+fn write_storage_file(path: &Path, items: &StorageMap) -> Result<()> {
+    let storage_str = serde_json::to_string(items).context("Failed to serialize storage items")?;
+    let directory = path.parent().context("Storage file has no directory")?;
+
+    let mut file =
+        tempfile::NamedTempFile::new_in(directory).context("Failed to create storage file")?;
+    file.write_all(storage_str.as_bytes())
+        .context("Failed to write storage to file")?;
+    file.persist(path).context("Failed to save storage file")?;
+
+    Ok(())
 }
 
 impl Storage {
@@ -49,8 +64,17 @@ impl Storage {
             let file_content =
                 read_to_string(&storage_path).context("Failed to read storage file")?;
 
-            let items: StorageMap =
+            let mut items: StorageMap =
                 serde_json::from_str(&file_content).context("Failed to parse storage file")?;
+
+            // The config decides what is tracked, not the flags saved on an earlier run.
+            for (key, item) in &mut items {
+                item.enabled = match key.as_str() {
+                    "channels" => storage_config.channels,
+                    "mentions" => storage_config.mentions,
+                    _ => false,
+                };
+            }
 
             return Ok(Self {
                 items,
@@ -64,7 +88,6 @@ impl Storage {
             let enabled = match *item_key {
                 "channels" => storage_config.channels,
                 "mentions" => storage_config.mentions,
-                "chatters" => storage_config.chatters,
                 _ => bail!("Invalid storage key {item_key}."),
             };
 
@@ -83,12 +106,7 @@ impl Storage {
             }
         }
 
-        let storage_str =
-            serde_json::to_string(&items).context("Failed to serialize storage items")?;
-        let mut file = File::create(&storage_path).context("Failed to create storage file")?;
-        file.write_all(storage_str.as_bytes())
-            .context("Failed to write storage to file")?;
-
+        // Not written here: the file is saved on exit, see `dump_data`.
         Ok(Self {
             items,
             file_path: storage_path,
@@ -96,15 +114,7 @@ impl Storage {
     }
 
     pub fn dump_data(&self) -> Result<()> {
-        let storage_str =
-            serde_json::to_string(&self.items).context("Failed to serialize storage items")?;
-
-        let mut file = File::create(&self.file_path).context("Failed to create storage file")?;
-
-        file.write_all(storage_str.as_bytes())
-            .context("Failed to write storage to file")?;
-
-        Ok(())
+        write_storage_file(&self.file_path, &self.items)
     }
 
     pub fn add(&mut self, key: &str, value: String) -> Result<()> {

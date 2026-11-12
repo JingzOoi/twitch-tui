@@ -47,6 +47,10 @@ impl ValueEnum for State {
     }
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Each bool is an independent command line flag"
+)]
 #[derive(Parser, Debug)]
 #[clap(rename_all = "kebab-case")]
 #[clap(author, version, about)]
@@ -60,7 +64,7 @@ pub struct Cli {
     pub log_file: Option<String>,
     /// If debug logs should be shown
     #[arg(short, long)]
-    pub verbose: Option<bool>,
+    pub verbose: bool,
     /// The delay in milliseconds between terminal updates
     #[arg(short, long)]
     pub delay: Option<u64>,
@@ -82,7 +86,7 @@ pub struct Cli {
     /// The starting state of the terminal
     #[arg(short, long)]
     pub first_state: Option<State>,
-    /// Show a warning if the screen size is too small
+    /// Hide the warning that is shown if the screen size is too small
     #[arg(short, long)]
     pub unsupported_screen_size: bool,
 }
@@ -93,7 +97,7 @@ pub fn merge_args_into_config(config: &mut CoreConfig, args: Cli) {
         config.terminal.log_file = Some(log_file);
     }
 
-    if args.verbose.is_some_and(|verbose| verbose) {
+    if args.verbose {
         config.terminal.log_level = LogLevel::Debug;
     }
 
@@ -127,5 +131,19 @@ pub fn merge_args_into_config(config: &mut CoreConfig, args: Cli) {
 
     if args.unsupported_screen_size {
         config.frontend.show_unsupported_screen_size = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verbose_flag_takes_no_value() {
+        let mut config = CoreConfig::default();
+
+        merge_args_into_config(&mut config, Cli::try_parse_from(["twt", "-v"]).unwrap());
+
+        assert!(matches!(config.terminal.log_level, LogLevel::Debug));
     }
 }

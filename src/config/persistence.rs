@@ -1,6 +1,6 @@
 use std::{
     env,
-    fs::File,
+    fs::{File, OpenOptions},
     io::Write,
     mem::drop,
     path::{Path, PathBuf},
@@ -64,7 +64,15 @@ pub fn get_data_dir() -> PathBuf {
 
 pub fn persist_config(path: &Path, config: &CoreConfig) -> Result<()> {
     let toml_string = toml::to_string(&config)?;
-    let mut file = File::create(path)?;
+
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+
+    // The config holds the OAuth token, other users on the machine must not read it.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+
+    let mut file = options.open(path)?;
 
     file.write_all(toml_string.as_bytes())?;
     drop(file);
@@ -87,4 +95,22 @@ pub fn persist_default_config(path: &Path) -> Result<()> {
     drop(file);
 
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    #[test]
+    fn config_with_token_is_private_to_the_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        persist_config(&path, &CoreConfig::default()).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
 }

@@ -1,16 +1,21 @@
 use std::{
     cell::{OnceCell, RefCell},
-    collections::{BTreeMap, HashMap, hash_map::DefaultHasher},
-    hash::{Hash, Hasher},
+    collections::{BTreeMap, HashMap},
     rc::Rc,
-    sync::OnceLock,
+    sync::{
+        OnceLock,
+        atomic::{AtomicU32, Ordering},
+    },
     thread,
 };
 
-use color_eyre::{Result, eyre::anyhow};
+use color_eyre::{
+    Result,
+    eyre::{anyhow, bail},
+};
 use tokio::sync::{
     mpsc,
-    mpsc::{Receiver, Sender},
+    mpsc::{Receiver, Sender, error::TrySendError},
     oneshot::{Receiver as OSReceiver, Sender as OSSender},
 };
 use tracing::{error, info, warn};
@@ -40,7 +45,7 @@ pub struct EmoteData {
 
 #[derive(Debug, Copy, Clone)]
 pub struct LoadedEmote {
-    /// Hash of the emote filename, used as an ID for displaying the image
+    /// Unique ID for displaying the image, see `next_image_id`
     pub hash: u32,
     /// Number of emotes that have been displayed
     pub n: u32,
@@ -162,6 +167,14 @@ pub fn decoder(mut rx: Receiver<Image>, tx: &Sender<Result<DecodedEmote, String>
     }
 }
 
+/// A counter, not a hash of the name: two emotes must never share an image ID.
+/// shortcut: IDs are encoded on 3 bytes and wrap after 16 million emotes in one run.
+fn next_image_id() -> u32 {
+    static NEXT_ID: AtomicU32 = AtomicU32::new(1);
+
+    NEXT_ID.fetch_add(1, Ordering::Relaxed) & 0x00FF_FFFF
+}
+
 pub fn load_emote(
     word: &str,
     filename: &str,
@@ -173,10 +186,7 @@ pub fn load_emote(
         emote.n += 1;
         Ok(*emote)
     } else {
-        let mut hasher = DefaultHasher::new();
-        word.hash(&mut hasher);
-        // ID is encoded on 3 bytes, discard the first one.
-        let hash = hasher.finish() as u32 & 0x00FF_FFFF;
+        let hash = next_image_id();
 
         // Tells the terminal to load the image for later use
         let path = get_cache_dir().join(filename);
@@ -219,14 +229,11 @@ pub fn load_picker_emote(
     overlay: bool,
     info: &mut HashMap<String, LoadedEmote>,
     cell_size: (f32, f32),
-) -> Result<LoadedEmote> {
+) -> Result<Option<LoadedEmote>> {
     if let Some(emote) = info.get(word) {
-        Ok(*emote)
+        Ok(Some(*emote))
     } else {
-        let mut hasher = DefaultHasher::new();
-        word.hash(&mut hasher);
-        // ID is encoded on 3 bytes, discard the first one.
-        let hash = hasher.finish() as u32 & 0x00FF_FFFF;
+        let hash = next_image_id();
 
         // Tells the terminal to load the image for later use
         let path = get_cache_dir().join(filename);
@@ -242,11 +249,16 @@ pub fn load_picker_emote(
         let width = image.width;
 
         // Decode emote in another thread, to avoid blocking main thread as decoding images is slow.
-        DECODE_EMOTE_SENDER
+        match DECODE_EMOTE_SENDER
             .get()
             .ok_or_else(|| anyhow!("Decoding channel has not been initialized."))?
             .try_send(image)
-            .map_err(|e| anyhow!("Unable to send emote to decoder thread. {e}"))?;
+        {
+            Ok(()) => {}
+            // The decoder is busy, not the emote broken: the caller tries again later.
+            Err(TrySendError::Full(_)) => return Ok(None),
+            Err(e) => bail!("Unable to send emote to decoder thread. {e}"),
+        }
 
         // Emote with placement id 1 is reserved for emote picker
         let emote = LoadedEmote {
@@ -257,7 +269,7 @@ pub fn load_picker_emote(
         };
 
         info.insert(word.to_string(), emote);
-        Ok(emote)
+        Ok(Some(emote))
     }
 }
 
@@ -289,6 +301,15 @@ pub fn overlay_emote(
     .apply()
 }
 
+/// Size of one terminal cell in pixels, `None` when the terminal reports no usable pixel size.
+/// Emotes cannot be sized without it, and a zero size would divide by zero later on.
+fn cell_size(width: u16, height: u16, columns: u16, rows: u16) -> Option<(f32, f32)> {
+    let cell_width = width.checked_div(columns)?;
+    let cell_height = height.checked_div(rows)?;
+
+    (cell_width > 0 && cell_height > 0).then(|| (f32::from(cell_width), f32::from(cell_height)))
+}
+
 type DecodedEmoteReceiver = Receiver<Result<DecodedEmote, String>>;
 
 /// Initialize the emote decoder if emotes are enabled.
@@ -302,13 +323,15 @@ pub fn initialize_emote_decoder(
 
     // We need to probe the terminal for it's size before starting the tui,
     // as writing on stdout on a different thread can interfere.
-    match tui::crossterm::terminal::window_size() {
-        Ok(size) => {
-            let cell_size = (
-                f32::from(size.width / size.columns),
-                f32::from(size.height / size.rows),
-            );
+    let cell_size = tui::crossterm::terminal::window_size()
+        .map_err(|e| e.to_string())
+        .and_then(|size| {
+            cell_size(size.width, size.height, size.columns, size.rows)
+                .ok_or_else(|| "the terminal does not report its size in pixels".to_string())
+        });
 
+    match cell_size {
+        Ok(cell_size) => {
             let (decoder_tx, decoder_rx) = mpsc::channel(100);
             DECODE_EMOTE_SENDER.get_or_init(|| decoder_tx);
 
@@ -328,5 +351,29 @@ pub fn initialize_emote_decoder(
             warn!("Unable to query terminal for it's dimensions, disabling emotes. {e}");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cell_size_needs_a_pixel_size() {
+        assert_eq!(cell_size(1920, 1080, 192, 54), Some((10.0, 20.0)));
+        // Terminals that do not fill in the pixel size report 0.
+        assert_eq!(cell_size(0, 0, 192, 54), None);
+        assert_eq!(cell_size(100, 1080, 192, 54), None);
+        assert_eq!(cell_size(1920, 1080, 0, 0), None);
+    }
+
+    #[test]
+    fn image_ids_are_unique_and_fit_in_three_bytes() {
+        let ids = (0..1000)
+            .map(|_| next_image_id())
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(ids.len(), 1000);
+        assert!(ids.iter().all(|id| *id <= 0x00FF_FFFF));
     }
 }

@@ -14,6 +14,8 @@ on:
 
 jobs:
   flakehub-publish:
+    # Only the upstream repository can publish, a tag on a fork must not try.
+    if: github.repository == 'Xithrius/twitch-tui'
     runs-on: "ubuntu-latest"
 
     permissions:

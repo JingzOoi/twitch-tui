@@ -179,11 +179,7 @@ impl DashboardWidget {
             *recent_title_chunk,
         );
 
-        let recent_channels = self
-            .storage
-            .borrow()
-            .get_last_n("channels", 5, true)
-            .context("Failed to get recent channels")?;
+        let recent_channels = self.recent_channels()?;
 
         if recent_channels.is_empty() {
             frame.render_widget(Paragraph::new("None"), *recent_content_chunk);
@@ -211,6 +207,42 @@ impl DashboardWidget {
         let quit_option = Paragraph::new(Line::from(spans));
 
         frame.render_widget(quit_option, chunk);
+    }
+}
+
+impl DashboardWidget {
+    fn recent_channels(&self) -> Result<Vec<String>> {
+        self.storage
+            .borrow()
+            .get_last_n(
+                "channels",
+                usize::from(self.config.frontend.recent_channel_count),
+                true,
+            )
+            .context("Failed to get recent channels")
+    }
+
+    /// The channels in the order they are numbered on screen: favorites, then the most recent ones.
+    fn listed_channels(&self) -> Result<Vec<String>> {
+        let mut channels = self.config.frontend.favorite_channels.clone();
+        channels.extend(self.recent_channels()?);
+
+        Ok(channels)
+    }
+
+    async fn join_listed_channel(&self, channel: &str) -> Result<()> {
+        self.storage
+            .borrow_mut()
+            .add("channels", channel.to_string())
+            .context(format!("Failed to add channel {channel} to storage"))?;
+
+        self.event_tx
+            .send(Event::Twitch(TwitchEvent::Action(
+                TwitchAction::JoinChannel(channel.to_string()),
+            )))
+            .await?;
+
+        Ok(())
     }
 }
 
@@ -303,6 +335,13 @@ impl Component for DashboardWidget {
                     self.following.toggle_focus().await;
                 }
                 key if keybinds.join.contains(key) => {
+                    // Confirms a typed number that is waiting for a second digit, such as `1` when `10` exists.
+                    if let Some(selection) = self.channel_selection.take() {
+                        if let Some(channel) = self.listed_channels()?.get(selection as usize) {
+                            return self.join_listed_channel(channel).await;
+                        }
+                    }
+
                     let configured_channel = self.config.twitch.channel.clone();
                     self.event_tx
                         .send(Event::Twitch(TwitchEvent::Action(
@@ -317,41 +356,24 @@ impl Component for DashboardWidget {
                 }
                 Key::Char(c) => {
                     if let Some(digit) = c.to_digit(10) {
-                        let mut channels = self.config.frontend.favorite_channels.clone();
-                        let mut selected_channels = self.storage.borrow().get("channels")?;
-                        selected_channels.reverse();
+                        let channels = self.listed_channels()?;
 
-                        channels.extend(selected_channels);
+                        let selection = self
+                            .channel_selection
+                            .take()
+                            .unwrap_or(0)
+                            .saturating_mul(10)
+                            .saturating_add(digit);
 
-                        let selection =
-                            if let Some(favorites_selection) = self.channel_selection.as_mut() {
-                                *favorites_selection = *favorites_selection * 10 + digit;
-                                *favorites_selection
-                            } else {
-                                self.channel_selection = Some(digit);
-                                digit
-                            } as usize;
-
-                        if let Some(channel) = channels.get(selection) {
-                            self.storage
-                                .borrow_mut()
-                                .add("channels", channel.clone())
-                                .context(format!("Failed to add channel {channel} to storage"))?;
-
-                            if selection != 0 && selection * 10 <= channels.len() {
+                        if let Some(channel) = channels.get(selection as usize) {
+                            // Wait for a second digit only when a longer index exists.
+                            if selection != 0 && (selection as usize) * 10 < channels.len() {
+                                self.channel_selection = Some(selection);
                                 return Ok(());
                             }
 
-                            self.channel_selection = None;
-                            self.event_tx
-                                .send(Event::Twitch(TwitchEvent::Action(
-                                    TwitchAction::JoinChannel(channel.clone()),
-                                )))
-                                .await?;
-
-                            return Ok(());
+                            return self.join_listed_channel(channel).await;
                         }
-                        self.channel_selection = None;
                     }
                 }
                 _ => {}
@@ -359,5 +381,77 @@ impl Component for DashboardWidget {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, rc::Rc, sync::Arc};
+
+    use tokio::sync::mpsc::{self, Receiver};
+
+    use super::*;
+    use crate::{config::CoreConfig, handlers::storage::Storage};
+
+    /// Only favorites are listed (`recent_channel_count` is 0), so the test does not depend on stored channels.
+    fn dashboard(favorites: usize) -> (DashboardWidget, Receiver<Event>) {
+        let mut config = CoreConfig::default();
+        config.frontend.favorite_channels = (0..favorites).map(|i| format!("c{i}")).collect();
+        config.frontend.recent_channel_count = 0;
+        let config = Arc::new(config);
+
+        let (tx, rx) = mpsc::channel(100);
+        let storage = Rc::new(RefCell::new(Storage::new(&config).unwrap()));
+
+        (
+            DashboardWidget::new(config, TwitchOauth::default(), tx, storage),
+            rx,
+        )
+    }
+
+    fn joined(rx: &mut Receiver<Event>) -> Vec<String> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                Event::Twitch(TwitchEvent::Action(TwitchAction::JoinChannel(channel))) => {
+                    Some(channel)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn digit_joins_at_once_when_no_longer_index_exists() {
+        let (mut dashboard, mut rx) = dashboard(10);
+
+        dashboard
+            .event(&Event::Input(Key::Char('1')))
+            .await
+            .unwrap();
+
+        assert_eq!(joined(&mut rx), ["c1"]);
+    }
+
+    #[tokio::test]
+    async fn pending_digit_takes_a_second_digit_or_enter() {
+        let (mut dashboard, mut rx) = dashboard(12);
+
+        dashboard
+            .event(&Event::Input(Key::Char('1')))
+            .await
+            .unwrap();
+        assert!(joined(&mut rx).is_empty());
+        dashboard
+            .event(&Event::Input(Key::Char('1')))
+            .await
+            .unwrap();
+        assert_eq!(joined(&mut rx), ["c11"]);
+
+        dashboard
+            .event(&Event::Input(Key::Char('1')))
+            .await
+            .unwrap();
+        dashboard.event(&Event::Input(Key::Enter)).await.unwrap();
+        assert_eq!(joined(&mut rx), ["c1"]);
     }
 }

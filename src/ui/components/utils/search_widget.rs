@@ -314,9 +314,14 @@ where
     }
 
     async fn event(&mut self, event: &Event) -> Result<()> {
-        if self.error_widget.is_focused() && matches!(event, Event::Input(Key::Esc)) {
-            self.error_widget.toggle_focus();
-            self.toggle_focus().await;
+        // There are no items behind the error popup, so the only thing to do is close it.
+        // `toggle_focus` also takes the focus off the error popup.
+        if self.error_widget.is_focused() {
+            let back = &self.config.keybinds.selection.back_to_previous_window;
+
+            if matches!(event, Event::Input(key) if *key == Key::Esc || back.contains(key)) {
+                self.toggle_focus().await;
+            }
 
             return Ok(());
         }
@@ -350,5 +355,48 @@ where
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use color_eyre::eyre::bail;
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::config::CoreConfig;
+
+    struct FailingGetter;
+
+    impl SearchItemGetter<String> for FailingGetter {
+        async fn get_items(&mut self) -> Result<Vec<String>> {
+            bail!("fetch failed")
+        }
+    }
+
+    #[tokio::test]
+    async fn error_popup_survives_navigation_and_closes_cleanly() {
+        let (tx, _rx) = mpsc::channel(100);
+        let mut widget = SearchWidget::new(
+            Arc::new(CoreConfig::default()),
+            tx,
+            FailingGetter,
+            "Test",
+            vec!["error"],
+        );
+
+        widget.toggle_focus().await;
+        assert!(widget.is_focused() && widget.error_widget.is_focused());
+
+        for key in [Key::Down, Key::Down, Key::Enter, Key::Char('a')] {
+            widget.event(&Event::Input(key)).await.unwrap();
+        }
+        assert!(widget.is_focused());
+
+        widget.event(&Event::Input(Key::Esc)).await.unwrap();
+        assert!(!widget.is_focused());
+        assert!(!widget.error_widget.is_focused());
     }
 }

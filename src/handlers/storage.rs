@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
-    fs::{File, create_dir_all, read_to_string},
+    fs::{create_dir_all, read_to_string},
     io::Write,
     path::{Path, PathBuf},
     rc::Rc,
@@ -31,6 +31,21 @@ pub struct Storage {
 pub struct StorageItem {
     content: Vec<String>,
     enabled: bool,
+}
+
+/// Writes to a temporary file and renames it over the target, so nobody ever reads a half-written file
+/// and a crash while saving cannot empty the storage.
+fn write_storage_file(path: &Path, items: &StorageMap) -> Result<()> {
+    let storage_str = serde_json::to_string(items).context("Failed to serialize storage items")?;
+    let directory = path.parent().context("Storage file has no directory")?;
+
+    let mut file =
+        tempfile::NamedTempFile::new_in(directory).context("Failed to create storage file")?;
+    file.write_all(storage_str.as_bytes())
+        .context("Failed to write storage to file")?;
+    file.persist(path).context("Failed to save storage file")?;
+
+    Ok(())
 }
 
 impl Storage {
@@ -91,11 +106,7 @@ impl Storage {
             }
         }
 
-        let storage_str =
-            serde_json::to_string(&items).context("Failed to serialize storage items")?;
-        let mut file = File::create(&storage_path).context("Failed to create storage file")?;
-        file.write_all(storage_str.as_bytes())
-            .context("Failed to write storage to file")?;
+        write_storage_file(&storage_path, &items)?;
 
         Ok(Self {
             items,
@@ -104,15 +115,7 @@ impl Storage {
     }
 
     pub fn dump_data(&self) -> Result<()> {
-        let storage_str =
-            serde_json::to_string(&self.items).context("Failed to serialize storage items")?;
-
-        let mut file = File::create(&self.file_path).context("Failed to create storage file")?;
-
-        file.write_all(storage_str.as_bytes())
-            .context("Failed to write storage to file")?;
-
-        Ok(())
+        write_storage_file(&self.file_path, &self.items)
     }
 
     pub fn add(&mut self, key: &str, value: String) -> Result<()> {
